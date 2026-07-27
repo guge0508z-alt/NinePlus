@@ -1,0 +1,163 @@
+name: Build unsigned iOS app
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    name: Build unsigned iOS app
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    env:
+      PROJECT_PATH: mini-ninebot/mini-ninebot.xcodeproj
+      TARGET_NAME: mini-ninebot
+      BUILD_ROOT: ${{ github.workspace }}/build
+      DERIVED_DATA_PATH: ${{ github.workspace }}/build/DerivedData
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.6 and inspect toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          mkdir -p "$BUILD_ROOT"
+          {
+            echo '=== macOS ==='
+            sw_vers
+            echo '=== Xcode ==='
+            xcodebuild -version
+            echo '=== Developer directory ==='
+            xcode-select -p
+            echo '=== SDKs ==='
+            xcodebuild -showsdks
+          } 2>&1 | tee "$BUILD_ROOT/toolchain.log"
+
+      - name: List Xcode project information
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -list \
+            2>&1 | tee "$BUILD_ROOT/xcodebuild-list.log"
+
+      - name: Build unsigned Release app for iPhoneOS
+        id: xcodebuild
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -target "$TARGET_NAME" \
+            -sdk iphoneos \
+            -configuration Release \
+            SYMROOT="$DERIVED_DATA_PATH/Build/Products" \
+            OBJROOT="$DERIVED_DATA_PATH/Build/Intermediates.noindex" \
+            SHARED_PRECOMPS_DIR="$DERIVED_DATA_PATH/Build/Intermediates.noindex/PrecompiledHeaders" \
+            MODULE_CACHE_DIR="$DERIVED_DATA_PATH/ModuleCache.noindex" \
+            DSTROOT="$DERIVED_DATA_PATH/Build/InstallationBuildProductsLocation" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build \
+            2>&1 | tee "$BUILD_ROOT/xcodebuild.log"
+
+      - name: Locate and validate app bundle
+        id: app
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          app_path="$(find "$BUILD_ROOT" -type d -name 'mini-ninebot.app' -print -quit)"
+          if [[ -z "$app_path" ]]; then
+            echo 'mini-ninebot.app was not found under the build directory.' >&2
+            exit 1
+          fi
+
+          widget_path="$app_path/PlugIns/NinebotWidgets.appex"
+          if [[ ! -d "$widget_path" ]]; then
+            echo "Embedded widget extension was not found at: $widget_path" >&2
+            exit 1
+          fi
+
+          echo "Found app: $app_path"
+          echo "Found embedded widget: $widget_path"
+          echo "app_path=$app_path" >> "$GITHUB_OUTPUT"
+
+      - name: Package unsigned IPA and app archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          payload_dir="$BUILD_ROOT/Payload"
+          payload_app="$payload_dir/mini-ninebot.app"
+          mkdir -p "$payload_dir"
+          ditto "${{ steps.app.outputs.app_path }}" "$payload_app"
+
+          (
+            cd "$BUILD_ROOT"
+            /usr/bin/zip -qry NinePlus-unsigned.ipa Payload
+          )
+
+          ditto -c -k --sequesterRsrc --keepParent \
+            "${{ steps.app.outputs.app_path }}" \
+            "$BUILD_ROOT/mini-ninebot.app.zip"
+
+          test -f "$BUILD_ROOT/NinePlus-unsigned.ipa"
+          test -f "$BUILD_ROOT/mini-ninebot.app.zip"
+          /usr/bin/unzip -l "$BUILD_ROOT/NinePlus-unsigned.ipa"
+
+      - name: Print build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo '=== macOS ==='
+          sw_vers
+          echo '=== Xcode ==='
+          xcodebuild -version
+          echo '=== Developer directory ==='
+          xcode-select -p
+          echo '=== SDKs ==='
+          xcodebuild -showsdks
+          echo '=== Project information ==='
+          xcodebuild -project "$PROJECT_PATH" -list
+          echo '=== Found app bundles ==='
+          find "$BUILD_ROOT" -type d -name '*.app' -print 2>/dev/null
+          echo '=== Found app extensions ==='
+          find "$BUILD_ROOT" -type d -name '*.appex' -print 2>/dev/null
+          echo '=== Build directory ==='
+          find "$BUILD_ROOT" -maxdepth 8 -print 2>/dev/null | sort
+
+      - name: Upload unsigned build
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NinePlus-unsigned
+          path: |
+            build/NinePlus-unsigned.ipa
+            build/mini-ninebot.app.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NinePlus-build-diagnostics
+          path: |
+            build/toolchain.log
+            build/xcodebuild-list.log
+            build/xcodebuild.log
+          if-no-files-found: warn
+          retention-days: 14
