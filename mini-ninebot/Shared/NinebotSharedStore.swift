@@ -195,6 +195,10 @@ struct NinebotSharedStore {
         return try? decoder.decode(NinebotDashboard.self, from: data)
     }
 
+    func clearDashboard() {
+        defaults.removeObject(forKey: Key.dashboard)
+    }
+
     @discardableResult
     func saveDashboard(_ dashboard: NinebotDashboard) -> NinebotDashboard {
         let archivedDashboard = dashboardWithArchivedInterfaceRides(dashboard)

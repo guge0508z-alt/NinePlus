@@ -201,7 +201,7 @@ final class NinebotViewModel: ObservableObject {
     }
 
     private func refreshAutomaticallyIfPossible() async {
-        guard hasConfiguration else { return }
+        guard hasConfiguration, hasLoginAccount else { return }
         guard !isLoading else { return }
 
         let now = Date()
@@ -236,6 +236,7 @@ final class NinebotViewModel: ObservableObject {
 
     func refreshDashboard() async {
         await runLoadingOperation(message: "正在刷新车况") {
+            guard self.hasLoginAccount else { throw NinebotInputError.missingAccount }
             let client = try makeClient()
             let dashboard = try await client.fetchDashboard(selectedSN: self.dashboard.selectedSN)
             let archivedDashboard = self.saveDashboard(dashboard)
@@ -362,6 +363,29 @@ final class NinebotViewModel: ObservableObject {
             self.statusMessage = "登录成功"
             WidgetCenter.shared.reloadAllTimelines()
         }
+    }
+
+    func logOut() {
+        loginResult = nil
+        account = ""
+        password = ""
+        dashboard = .empty
+        history = [:]
+        rideDetails = [:]
+        loadingRideDetailKeys = []
+        activeVehicleAction = nil
+        activeVehicleActionSN = nil
+        syncingTravelMonth = nil
+        lastAutomaticRefreshAt = nil
+        errorMessage = nil
+        statusMessage = nil
+
+        store.clearLoginResult()
+        store.clearDashboard()
+        store.saveConfiguration(currentConfiguration)
+
+        NinebotChargingLiveActivityManager.sync(with: .empty)
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     func selectVehicle(sn: String) {

@@ -5,6 +5,7 @@ struct NinebotSettingsView: View {
     @ObservedObject var model: NinebotViewModel
     @Environment(\.openURL) private var openURL
     @State private var isShowingConnectionSettings = false
+    @State private var isShowingLogoutConfirmation = false
 
     var body: some View {
         Group {
@@ -167,6 +168,20 @@ struct NinebotSettingsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
                 .ninePlusCard(cornerRadius: 24)
+
+                Button(role: .destructive) {
+                    isShowingLogoutConfirmation = true
+                } label: {
+                    SettingsButtonLabel(
+                        title: "退出登录",
+                        systemImage: "rectangle.portrait.and.arrow.right"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .frame(maxWidth: .infinity)
+                .padding(16)
+                .ninePlusCard(cornerRadius: 24)
             }
             .padding(16)
             .padding(.bottom, 18)
@@ -180,6 +195,18 @@ struct NinebotSettingsView: View {
                     ProgressView()
                 }
             }
+        }
+        .confirmationDialog(
+            "确认退出登录？",
+            isPresented: $isShowingLogoutConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("退出登录", role: .destructive) {
+                model.logOut()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将清除 NinePlus 本地登录状态和账号信息，不会退出或修改九号账号。")
         }
     }
 
