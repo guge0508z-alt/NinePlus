@@ -399,7 +399,7 @@ final class NinebotViewModel: ObservableObject {
     func logOut() {
         var credentialDeletionError: String?
         do {
-            try credentialStore.removeAll()
+            try credentialStore.saveSessionToken(nil)
         } catch {
             credentialDeletionError = error.localizedDescription
         }
@@ -407,7 +407,6 @@ final class NinebotViewModel: ObservableObject {
         loginResult = nil
         account = ""
         password = ""
-        bearerToken = ""
         dashboard = .empty
         history = [:]
         rideDetails = [:]

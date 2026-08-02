@@ -33,13 +33,17 @@ class KeychainMigrationTests(unittest.TestCase):
         self.assertIn("sharedConfiguration.appSessionToken = nil", shared_store)
         self.assertIn("sharedResult.sessionToken = nil", shared_store)
 
-    def test_login_saves_session_and_logout_removes_credentials(self) -> None:
+    def test_login_saves_session_and_logout_only_removes_session(self) -> None:
         view_model = source("mini-ninebot/App/NinebotViewModel.swift")
         self.assertIn(
             "try credentialStore.saveSessionToken(resolvedResult.sessionToken)",
             view_model,
         )
-        self.assertIn("try credentialStore.removeAll()", view_model)
+        logout = view_model.split("func logOut()", 1)[1].split("func selectVehicle", 1)[0]
+        self.assertIn("try credentialStore.saveSessionToken(nil)", logout)
+        self.assertNotIn("credentialStore.removeAll()", logout)
+        self.assertNotIn('bearerToken = ""', logout)
+        self.assertIn("store.saveConfiguration(currentConfiguration)", logout)
 
     def test_requests_keep_authorization_bearer_header(self) -> None:
         client = source("Shared/NinebotServerClient.swift")
