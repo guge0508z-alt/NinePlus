@@ -31,6 +31,8 @@ final class NinebotPushManager: NSObject, UIApplicationDelegate, UNUserNotificat
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        NinebotBackgroundTaskManager.register()
+        NinebotBackgroundTaskManager.scheduleRefresh()
         UNUserNotificationCenter.current().delegate = self
         NinebotChargingLiveActivityManager.startRemoteTokenObservation()
         Task { await requestAuthorizationOnLaunchAndRegister() }

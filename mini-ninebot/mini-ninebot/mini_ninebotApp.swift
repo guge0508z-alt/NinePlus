@@ -13,8 +13,6 @@ struct mini_ninebotApp: App {
     @UIApplicationDelegateAdaptor(NinebotPushManager.self) private var pushManager
 
     init() {
-        NinebotBackgroundTaskManager.register()
-        NinebotBackgroundTaskManager.scheduleRefresh()
         NinebotAppShortcutsProvider.updateAppShortcutParameters()
     }
 
