@@ -148,18 +148,51 @@ final class NinebotViewModel: ObservableObject {
     @Published private(set) var syncingTravelMonth: String?
 
     private let store = NinebotSharedStore()
+    private let credentialStore = NinebotCredentialStore.shared
     private var lastAutomaticRefreshAt: Date?
 
     init() {
+        func normalizedCredential(_ value: String?) -> String? {
+            let cleaned = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return cleaned.isEmpty ? nil : cleaned
+        }
+
         let configuration = store.loadConfiguration()
-        let loginResult = store.loadLoginResult()
+        let storedLoginResult = store.loadLoginResult()
+        let credentials: NinebotCredentials
+        let credentialMigrationError: String?
+
+        do {
+            credentials = try NinebotCredentialStore.shared.migrateLegacyCredentials(
+                apiKey: configuration?.bearerToken,
+                sessionToken: storedLoginResult?.sessionToken
+            )
+            credentialMigrationError = nil
+
+            if let configuration {
+                store.saveConfiguration(configuration)
+                store.removeLegacyConfiguration()
+            }
+            if let storedLoginResult {
+                store.saveLoginResult(storedLoginResult)
+            }
+        } catch {
+            credentials = NinebotCredentials(
+                apiKey: normalizedCredential(configuration?.bearerToken),
+                sessionToken: normalizedCredential(storedLoginResult?.sessionToken)
+            )
+            credentialMigrationError = error.localizedDescription
+        }
+
+        var resolvedLoginResult = storedLoginResult
+        resolvedLoginResult?.sessionToken = credentials.sessionToken
         self.baseURLString = configuration?.baseURLString ?? ""
-        self.bearerToken = configuration?.bearerToken ?? ""
-        self.loginResult = loginResult
-        self.account = loginResult?.phone ?? ""
+        self.bearerToken = credentials.apiKey ?? ""
+        self.loginResult = resolvedLoginResult
+        self.account = resolvedLoginResult?.phone ?? ""
         self.pushDeviceToken = store.loadPushDeviceToken()
         self.dashboard = store.loadDashboard() ?? .empty
-        self.errorMessage = store.loadLastError()
+        self.errorMessage = credentialMigrationError ?? store.loadLastError()
         self.history = Self.historyMap(for: self.dashboard, store: store)
         self.resolvedAddresses = store.loadResolvedAddresses().filter { $0.value.source == Self.addressGeocodingSource }
         self.recordedRides = store.loadRecordedRides()
@@ -167,7 +200,7 @@ final class NinebotViewModel: ObservableObject {
     }
 
     var hasConfiguration: Bool {
-        currentConfiguration.isUsable
+        currentConfiguration.isUsable && !bearerToken.trimmed.isEmpty
     }
 
     var hasVehicles: Bool {
@@ -214,15 +247,13 @@ final class NinebotViewModel: ObservableObject {
     }
 
     func saveConfiguration() {
-        let configuration = currentConfiguration
-        guard configuration.isUsable else {
-            errorMessage = NinebotInputError.missingServer.localizedDescription
-            return
+        do {
+            try persistCurrentConfiguration()
+            errorMessage = nil
+            statusMessage = "服务器配置已保存"
+        } catch {
+            errorMessage = error.localizedDescription
         }
-
-        store.saveConfiguration(configuration)
-        errorMessage = nil
-        statusMessage = "服务器配置已保存"
     }
 
     func testConnection() async {
@@ -348,10 +379,10 @@ final class NinebotViewModel: ObservableObject {
             guard !account.trimmed.isEmpty else { throw NinebotInputError.missingAccount }
             guard !password.isEmpty else { throw NinebotInputError.missingPassword }
 
-            saveConfiguration()
+            try persistCurrentConfiguration()
             let client = try makeClient()
             let result = try await client.login(account: account.trimmed, password: password)
-            rememberLoginResult(result, fallbackAccount: account.trimmed)
+            try rememberLoginResult(result, fallbackAccount: account.trimmed)
             password = ""
             await self.syncPushDeviceTokenIfPossible()
 
@@ -366,9 +397,17 @@ final class NinebotViewModel: ObservableObject {
     }
 
     func logOut() {
+        var credentialDeletionError: String?
+        do {
+            try credentialStore.removeAll()
+        } catch {
+            credentialDeletionError = error.localizedDescription
+        }
+
         loginResult = nil
         account = ""
         password = ""
+        bearerToken = ""
         dashboard = .empty
         history = [:]
         rideDetails = [:]
@@ -377,7 +416,7 @@ final class NinebotViewModel: ObservableObject {
         activeVehicleActionSN = nil
         syncingTravelMonth = nil
         lastAutomaticRefreshAt = nil
-        errorMessage = nil
+        errorMessage = credentialDeletionError
         statusMessage = nil
 
         store.clearLoginResult()
@@ -540,12 +579,22 @@ final class NinebotViewModel: ObservableObject {
     }
 
     private func makeClient() throws -> NinebotServerClient {
+        let sharedConfiguration = currentConfiguration
+        guard sharedConfiguration.isUsable else {
+            throw NinebotInputError.missingServer
+        }
+        let configuration = try credentialStore.resolvedConfiguration(from: sharedConfiguration)
+        store.saveConfiguration(sharedConfiguration)
+        return NinebotServerClient(configuration: configuration)
+    }
+
+    private func persistCurrentConfiguration() throws {
         let configuration = currentConfiguration
         guard configuration.isUsable else {
             throw NinebotInputError.missingServer
         }
+        try credentialStore.saveAPIKey(bearerToken)
         store.saveConfiguration(configuration)
-        return NinebotServerClient(configuration: configuration)
     }
 
     private func rideDetailKey(vehicleSN: String, rideID: String) -> String {
@@ -650,11 +699,12 @@ final class NinebotViewModel: ObservableObject {
         return sameCoordinate && Date().timeIntervalSince(address.updatedAt) < 15 * 60
     }
 
-    private func rememberLoginResult(_ result: NinebotLoginResult, fallbackAccount: String) {
+    private func rememberLoginResult(_ result: NinebotLoginResult, fallbackAccount: String) throws {
         var resolvedResult = result
         if resolvedResult.phone?.trimmed.isEmpty != false {
             resolvedResult.phone = fallbackAccount
         }
+        try credentialStore.saveSessionToken(resolvedResult.sessionToken)
         loginResult = resolvedResult
         account = resolvedResult.phone ?? fallbackAccount
         store.saveLoginResult(resolvedResult)

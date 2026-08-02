@@ -41,13 +41,18 @@ struct NinebotSharedStore {
               let configuration = try? decoder.decode(NinebotServerConfiguration.self, from: data) else {
             return nil
         }
-        saveConfiguration(configuration)
-        defaults.removeObject(forKey: Key.legacyConfiguration)
         return configuration
     }
 
+    func removeLegacyConfiguration() {
+        defaults.removeObject(forKey: Key.legacyConfiguration)
+    }
+
     func saveConfiguration(_ configuration: NinebotServerConfiguration) {
-        guard let data = try? encoder.encode(configuration) else { return }
+        var sharedConfiguration = configuration
+        sharedConfiguration.bearerToken = ""
+        sharedConfiguration.appSessionToken = nil
+        guard let data = try? encoder.encode(sharedConfiguration) else { return }
         defaults.set(data, forKey: Key.serverConfiguration)
     }
 
@@ -182,7 +187,9 @@ struct NinebotSharedStore {
     }
 
     func saveLoginResult(_ result: NinebotLoginResult) {
-        guard let data = try? encoder.encode(result) else { return }
+        var sharedResult = result
+        sharedResult.sessionToken = nil
+        guard let data = try? encoder.encode(sharedResult) else { return }
         defaults.set(data, forKey: Key.loginResult)
     }
 

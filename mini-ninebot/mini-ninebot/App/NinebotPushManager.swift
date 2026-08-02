@@ -87,9 +87,10 @@ final class NinebotPushManager: NSObject, UIApplicationDelegate, UNUserNotificat
         guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else {
             throw NinebotPushError.missingBundleID
         }
-        guard let configuration = store.loadConfiguration(), configuration.isUsable else {
+        guard let sharedConfiguration = store.loadConfiguration(), sharedConfiguration.isUsable else {
             throw NinebotPushError.missingServer
         }
+        let configuration = try NinebotCredentialStore.shared.resolvedConfiguration(from: sharedConfiguration)
         try await NinebotServerClient(configuration: configuration).registerPushDevice(
             token: token,
             bundleID: bundleID,
@@ -199,9 +200,10 @@ final class NinebotPushManager: NSObject, UIApplicationDelegate, UNUserNotificat
         guard let bundleID = Bundle.main.bundleIdentifier, !bundleID.isEmpty else {
             throw NinebotPushError.missingBundleID
         }
-        guard let configuration = store.loadConfiguration(), configuration.isUsable else {
+        guard let sharedConfiguration = store.loadConfiguration(), sharedConfiguration.isUsable else {
             throw NinebotPushError.missingServer
         }
+        let configuration = try NinebotCredentialStore.shared.resolvedConfiguration(from: sharedConfiguration)
         try await NinebotServerClient(configuration: configuration).registerLiveActivityToken(
             token: token,
             tokenKind: tokenKind,

@@ -354,10 +354,11 @@ private enum NinebotShortcutRunner {
     }
 
     private static func client(from store: NinebotSharedStore) throws -> NinebotServerClient {
-        let configuration = store.loadConfiguration() ?? NinebotServerConfiguration(baseURLString: "", bearerToken: "")
-        guard configuration.isUsable else {
+        let sharedConfiguration = store.loadConfiguration() ?? NinebotServerConfiguration(baseURLString: "", bearerToken: "")
+        guard sharedConfiguration.isUsable else {
             throw NinebotShortcutError.missingConfiguration
         }
+        let configuration = try NinebotCredentialStore.shared.resolvedConfiguration(from: sharedConfiguration)
         return NinebotServerClient(configuration: configuration)
     }
 

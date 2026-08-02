@@ -60,10 +60,18 @@ enum NinebotBackgroundTaskManager {
         let startedAt = Date()
         let store = NinebotSharedStore()
         let cached = store.loadDashboard()
-        let configuration = store.loadConfiguration() ?? NinebotServerConfiguration(baseURLString: "", bearerToken: "")
+        let sharedConfiguration = store.loadConfiguration() ?? NinebotServerConfiguration(baseURLString: "", bearerToken: "")
 
-        guard configuration.isUsable else {
+        guard sharedConfiguration.isUsable else {
             recordFailure("未配置数据源", source: source, startedAt: startedAt, store: store)
+            return false
+        }
+
+        let configuration: NinebotServerConfiguration
+        do {
+            configuration = try NinebotCredentialStore.shared.resolvedConfiguration(from: sharedConfiguration)
+        } catch {
+            recordFailure("无法读取安全凭据", source: source, startedAt: startedAt, store: store)
             return false
         }
 
