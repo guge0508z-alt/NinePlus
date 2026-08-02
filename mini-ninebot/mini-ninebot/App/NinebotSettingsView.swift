@@ -53,8 +53,8 @@ struct NinebotSettingsView: View {
                         )
 
                         SettingsInputField(
-                            title: "访问口令（可选）",
-                            placeholder: "后台设置了 App Bearer Token 时填写",
+                            title: "NinePlus API Key",
+                            placeholder: "与服务器 NINEPLUS_API_KEY 保持一致",
                             systemImage: "key.horizontal.fill",
                             text: $model.bearerToken,
                             isSecure: true
@@ -82,11 +82,11 @@ struct NinebotSettingsView: View {
                                 SettingsCompactButtonLabel(title: "保存", systemImage: "tray.and.arrow.down.fill")
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(!hasText(model.baseURLString))
+                            .disabled(!hasText(model.baseURLString) || !hasText(model.bearerToken))
                         }
                         .font(.subheadline.weight(.semibold))
 
-                        Text("多账号、APNs 和轮询策略在 NinePlus Platform 后台管理；后台未设置 App Bearer Token 时可留空。")
+                        Text("API Key 只保存在现有服务器配置中，请填写与后端 NINEPLUS_API_KEY 相同的值。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -473,7 +473,7 @@ private struct LoginConnectionSheet: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("连接设置")
                         .font(.title2.weight(.semibold))
-                    Text("接口地址由用户自行填写；后台设置了 App 访问口令时再填口令。")
+                    Text("填写服务器地址，以及与后端 NINEPLUS_API_KEY 相同的 API Key。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -488,8 +488,8 @@ private struct LoginConnectionSheet: View {
                 )
 
                 SettingsInputField(
-                    title: "访问口令（可选）",
-                    placeholder: "后台设置了 App Bearer Token 时填写",
+                    title: "NinePlus API Key",
+                    placeholder: "与服务器 NINEPLUS_API_KEY 保持一致",
                     systemImage: "key.horizontal.fill",
                     text: $model.bearerToken,
                     isSecure: true
@@ -514,7 +514,10 @@ private struct LoginConnectionSheet: View {
                         SettingsCompactButtonLabel(title: "保存", systemImage: "checkmark")
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        model.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || model.bearerToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
                 }
 
                 Spacer(minLength: 0)
