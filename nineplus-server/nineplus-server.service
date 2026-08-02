@@ -1,0 +1,32 @@
+[Unit]
+Description=NinePlus FastAPI Server
+Documentation=https://github.com/guge0508z-alt/NinePlus
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=nineplus
+Group=nineplus
+WorkingDirectory=/opt/NinePlus/nineplus-server
+EnvironmentFile=/etc/nineplus-server/environment
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/NinePlus/nineplus-server/.venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 19009
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=30
+KillSignal=SIGINT
+UMask=0077
+
+# The service only needs network access and write access to ninecli runtime data.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nineplus-server
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

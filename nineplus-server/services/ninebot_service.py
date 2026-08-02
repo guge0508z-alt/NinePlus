@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any
 
 from services.cache_service import CacheResult, CacheService
@@ -13,10 +14,34 @@ from services.cache_service import CacheResult, CacheService
 
 SERVER_DIR = Path(__file__).resolve().parents[1]
 REPOSITORY_DIR = SERVER_DIR.parent
-DEFAULT_NINECLI_PYTHON = (
-    REPOSITORY_DIR / "ninebot-cli-test" / ".venv" / "Scripts" / "python.exe"
-)
-DEFAULT_NINECLI_CONFIG = REPOSITORY_DIR / "ninebot-cli-test" / "ninebot-config"
+
+
+def _default_ninecli_python() -> Path:
+    """Prefer the legacy test venv when present, otherwise use this venv."""
+    executable_name = "python.exe" if os.name == "nt" else "python"
+    executable_dir = "Scripts" if os.name == "nt" else "bin"
+    legacy_python = (
+        REPOSITORY_DIR
+        / "ninebot-cli-test"
+        / ".venv"
+        / executable_dir
+        / executable_name
+    )
+    if legacy_python.is_file():
+        return legacy_python
+    return Path(sys.executable)
+
+
+def _default_ninecli_config() -> Path:
+    """Preserve the local test config, then follow ninecli's cross-platform default."""
+    legacy_config = REPOSITORY_DIR / "ninebot-cli-test" / "ninebot-config"
+    if legacy_config.is_dir():
+        return legacy_config
+    return Path.home() / ".config" / "ninebot"
+
+
+DEFAULT_NINECLI_PYTHON = _default_ninecli_python()
+DEFAULT_NINECLI_CONFIG = _default_ninecli_config()
 DEFAULT_TIMEOUT_SECONDS = 45.0
 VEHICLES_CACHE_TTL_SECONDS = 5 * 60.0
 DASHBOARD_CACHE_TTL_SECONDS = 45.0

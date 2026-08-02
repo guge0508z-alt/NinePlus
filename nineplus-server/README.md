@@ -6,9 +6,11 @@ NinePlus Server 是 NinePlus iOS App 的 FastAPI 后端。它通过独立安装�
 
 ## 运行环境
 
-- Windows 11
+- Windows 11 或 Ubuntu 24.04 LTS
 - Python 3.11 或更高版本
-- 已独立安装并登录的 `ninecli==0.1.7`
+- `ninecli==0.1.7`（由 `requirements.txt` 安装）
+
+Ubuntu 长期运行、systemd 和腾讯云安全组配置请参阅 [DEPLOY_LINUX.md](DEPLOY_LINUX.md)。
 
 ## 安装
 
