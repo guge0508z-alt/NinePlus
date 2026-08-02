@@ -31,6 +31,10 @@ struct NinebotServerClient {
         _ = try await request(method: "GET", path: ["healthz"])
     }
 
+    func vehicleServiceCheck() async throws {
+        _ = try await request(method: "GET", path: ["vehicles"])
+    }
+
     func login(account: String, password: String) async throws -> NinebotLoginResult {
         let payload = try await request(
             method: "POST",

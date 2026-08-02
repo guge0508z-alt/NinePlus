@@ -74,7 +74,7 @@ struct NinebotSettingsView: View {
                                 SettingsCompactButtonLabel(title: "测试", systemImage: "network")
                             }
                             .buttonStyle(.bordered)
-                            .disabled(!hasText(model.baseURLString))
+                            .disabled(!hasText(model.baseURLString) || model.isLoading)
 
                             Button {
                                 saveConnection()
@@ -85,6 +85,8 @@ struct NinebotSettingsView: View {
                             .disabled(!hasText(model.baseURLString) || !hasText(model.bearerToken))
                         }
                         .font(.subheadline.weight(.semibold))
+
+                        ConnectionCheckStatusView(report: model.connectionCheck)
 
                         Text("API Key 只保存在现有服务器配置中，请填写与后端 NINEPLUS_API_KEY 相同的值。")
                             .font(.caption)
@@ -502,7 +504,10 @@ private struct LoginConnectionSheet: View {
                         SettingsCompactButtonLabel(title: "测试", systemImage: "network")
                     }
                     .buttonStyle(.bordered)
-                    .disabled(model.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(
+                        model.baseURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || model.isLoading
+                    )
 
                     Button {
                         model.saveConfiguration()
@@ -520,6 +525,8 @@ private struct LoginConnectionSheet: View {
                     )
                 }
 
+                ConnectionCheckStatusView(report: model.connectionCheck)
+
                 Spacer(minLength: 0)
             }
             .padding(20)
@@ -534,6 +541,102 @@ private struct LoginConnectionSheet: View {
         }
     }
 
+}
+
+private struct ConnectionCheckStatusView: View {
+    var report: NinebotConnectionCheckReport
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ConnectionCheckStatusRow(title: "服务器状态", state: report.server)
+            ConnectionCheckStatusRow(title: "API Key 状态", state: report.apiKey)
+            ConnectionCheckStatusRow(title: "九号服务状态", state: report.ninebotService)
+
+            if let summary = report.summary.message {
+                Text(summary)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(summaryColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 2)
+            }
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("连接检测结果")
+    }
+
+    private var summaryColor: Color {
+        switch report.summary {
+        case .allNormal:
+            return .green
+        case .serverOffline, .apiKeyInvalid, .ninebotUnavailable:
+            return .red
+        case .idle, .checking:
+            return .secondary
+        }
+    }
+}
+
+private struct ConnectionCheckStatusRow: View {
+    var title: String
+    var state: NinebotConnectionProbeState
+
+    var body: some View {
+        HStack(spacing: 9) {
+            indicator
+                .frame(width: 18, height: 18)
+
+            Text(title)
+                .font(.footnote.weight(.medium))
+
+            Spacer(minLength: 8)
+
+            Text(stateText)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(stateColor)
+        }
+    }
+
+    @ViewBuilder
+    private var indicator: some View {
+        switch state {
+        case .checking:
+            ProgressView()
+                .controlSize(.small)
+        case .success:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .failure:
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.red)
+        case .pending:
+            Image(systemName: "circle")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var stateText: String {
+        switch state {
+        case .pending:
+            return "未检测"
+        case .checking:
+            return "检测中"
+        case .success(let message), .failure(let message):
+            return message
+        }
+    }
+
+    private var stateColor: Color {
+        switch state {
+        case .success:
+            return .green
+        case .failure:
+            return .red
+        case .pending, .checking:
+            return .secondary
+        }
+    }
 }
 
 private struct LoginHeroVisual: View {

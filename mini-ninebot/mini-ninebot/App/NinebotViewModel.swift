@@ -124,6 +124,53 @@ struct NinebotDiagnosticsSnapshot {
     var dashboardCacheBytes: Int
 }
 
+enum NinebotConnectionProbeState: Equatable {
+    case pending
+    case checking
+    case success(String)
+    case failure(String)
+}
+
+enum NinebotConnectionCheckSummary: Equatable {
+    case idle
+    case checking
+    case serverOffline
+    case apiKeyInvalid
+    case ninebotUnavailable
+    case allNormal
+
+    var message: String? {
+        switch self {
+        case .idle:
+            return nil
+        case .checking:
+            return "正在检测连接"
+        case .serverOffline:
+            return "服务器离线"
+        case .apiKeyInvalid:
+            return "API Key 无效"
+        case .ninebotUnavailable:
+            return "九号服务不可用"
+        case .allNormal:
+            return "服务器、API Key 和九号服务全部正常"
+        }
+    }
+}
+
+struct NinebotConnectionCheckReport: Equatable {
+    var server: NinebotConnectionProbeState
+    var apiKey: NinebotConnectionProbeState
+    var ninebotService: NinebotConnectionProbeState
+    var summary: NinebotConnectionCheckSummary
+
+    static let idle = NinebotConnectionCheckReport(
+        server: .pending,
+        apiKey: .pending,
+        ninebotService: .pending,
+        summary: .idle
+    )
+}
+
 @MainActor
 final class NinebotViewModel: ObservableObject {
     @Published var baseURLString = ""
@@ -137,6 +184,7 @@ final class NinebotViewModel: ObservableObject {
     @Published var loadingMessage: String?
     @Published var errorMessage: String?
     @Published var statusMessage: String?
+    @Published private(set) var connectionCheck = NinebotConnectionCheckReport.idle
     @Published private(set) var capturePrivacyProtectionEnabled = false
     @Published private(set) var activeVehicleAction: NinebotVehicleAction?
     @Published private(set) var activeVehicleActionSN: String?
@@ -257,12 +305,78 @@ final class NinebotViewModel: ObservableObject {
     }
 
     func testConnection() async {
-        await runLoadingOperation(message: "正在测试连接") {
-            let client = try makeClient()
+        isLoading = true
+        loadingMessage = "正在测试连接"
+        errorMessage = nil
+        statusMessage = nil
+        connectionCheck = NinebotConnectionCheckReport(
+            server: .checking,
+            apiKey: .pending,
+            ninebotService: .pending,
+            summary: .checking
+        )
+
+        let client: NinebotServerClient
+        do {
+            client = try makeConnectionCheckClient()
             try await client.healthCheck()
-            self.errorMessage = nil
-            self.statusMessage = "服务器连接正常"
+        } catch {
+            connectionCheck = NinebotConnectionCheckReport(
+                server: .failure("离线"),
+                apiKey: .pending,
+                ninebotService: .pending,
+                summary: .serverOffline
+            )
+            errorMessage = connectionCheck.summary.message
+            finishConnectionCheck()
+            return
         }
+
+        connectionCheck = NinebotConnectionCheckReport(
+            server: .success("在线"),
+            apiKey: .checking,
+            ninebotService: .pending,
+            summary: .checking
+        )
+
+        do {
+            try await client.vehicleServiceCheck()
+            connectionCheck = NinebotConnectionCheckReport(
+                server: .success("在线"),
+                apiKey: .success("有效"),
+                ninebotService: .success("可用"),
+                summary: .allNormal
+            )
+            statusMessage = connectionCheck.summary.message
+        } catch let error as NinebotServerError {
+            if case .httpStatus(let statusCode, _) = error,
+               statusCode == 401 || statusCode == 403 {
+                connectionCheck = NinebotConnectionCheckReport(
+                    server: .success("在线"),
+                    apiKey: .failure("无效"),
+                    ninebotService: .pending,
+                    summary: .apiKeyInvalid
+                )
+            } else {
+                connectionCheck = NinebotConnectionCheckReport(
+                    server: .success("在线"),
+                    apiKey: .success("有效"),
+                    ninebotService: .failure("不可用"),
+                    summary: .ninebotUnavailable
+                )
+            }
+            errorMessage = connectionCheck.summary.message
+        } catch {
+            connectionCheck = NinebotConnectionCheckReport(
+                server: .success("在线"),
+                apiKey: .success("有效"),
+                ninebotService: .failure("不可用"),
+                summary: .ninebotUnavailable
+            )
+            errorMessage = connectionCheck.summary.message
+        }
+
+        finishConnectionCheck()
     }
 
     func refreshDashboard() async {
@@ -417,6 +531,7 @@ final class NinebotViewModel: ObservableObject {
         lastAutomaticRefreshAt = nil
         errorMessage = credentialDeletionError
         statusMessage = nil
+        connectionCheck = .idle
 
         store.clearLoginResult()
         store.clearDashboard()
@@ -585,6 +700,23 @@ final class NinebotViewModel: ObservableObject {
         let configuration = try credentialStore.resolvedConfiguration(from: sharedConfiguration)
         store.saveConfiguration(sharedConfiguration)
         return NinebotServerClient(configuration: configuration)
+    }
+
+    private func makeConnectionCheckClient() throws -> NinebotServerClient {
+        let configuration = NinebotServerConfiguration(
+            baseURLString: baseURLString,
+            bearerToken: bearerToken,
+            appSessionToken: nil
+        )
+        guard configuration.isUsable else {
+            throw NinebotInputError.missingServer
+        }
+        return NinebotServerClient(configuration: configuration)
+    }
+
+    private func finishConnectionCheck() {
+        isLoading = false
+        loadingMessage = nil
     }
 
     private func persistCurrentConfiguration() throws {
