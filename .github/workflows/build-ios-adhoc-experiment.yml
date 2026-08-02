@@ -1,0 +1,206 @@
+name: Build ad-hoc signed iOS experiment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-adhoc-experiment:
+    name: Build ad-hoc signed nested IPA
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    env:
+      PROJECT_PATH: mini-ninebot/mini-ninebot.xcodeproj
+      TARGET_NAME: mini-ninebot
+      BUILD_CONFIGURATION: Release
+      BUILD_ROOT: ${{ github.workspace }}/build-adhoc-experiment
+      DERIVED_DATA_PATH: ${{ github.workspace }}/build-adhoc-experiment/DerivedData
+      APP_ENTITLEMENTS: mini-ninebot/mini-ninebot/mini-ninebot.entitlements
+      WIDGET_ENTITLEMENTS: mini-ninebot/NinebotWidgets/NinebotWidgets.entitlements
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26.6 and inspect toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          mkdir -p "$BUILD_ROOT"
+          sw_vers
+          xcodebuild -version
+          xcode-select -p
+          xcodebuild -showsdks
+          codesign --version
+
+      - name: List Xcode project information
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -list \
+            2>&1 | tee "$BUILD_ROOT/xcodebuild-list.log"
+
+      - name: Build app without Apple signing
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -target "$TARGET_NAME" \
+            -sdk iphoneos \
+            -configuration "$BUILD_CONFIGURATION" \
+            SYMROOT="$DERIVED_DATA_PATH/Build/Products" \
+            OBJROOT="$DERIVED_DATA_PATH/Build/Intermediates.noindex" \
+            SHARED_PRECOMPS_DIR="$DERIVED_DATA_PATH/Build/Intermediates.noindex/PrecompiledHeaders" \
+            MODULE_CACHE_DIR="$DERIVED_DATA_PATH/ModuleCache.noindex" \
+            DSTROOT="$DERIVED_DATA_PATH/Build/InstallationBuildProductsLocation" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build \
+            2>&1 | tee "$BUILD_ROOT/xcodebuild.log"
+
+      - name: Prepare Payload and inspect bundle identifiers
+        id: bundle
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          built_app="$(find "$DERIVED_DATA_PATH/Build/Products" -type d -name 'mini-ninebot.app' -print -quit)"
+          if [[ -z "$built_app" ]]; then
+            echo 'mini-ninebot.app was not found.' >&2
+            exit 1
+          fi
+
+          payload_dir="$BUILD_ROOT/Payload"
+          app_path="$payload_dir/mini-ninebot.app"
+          widget_path="$app_path/PlugIns/NinebotWidgets.appex"
+          mkdir -p "$payload_dir"
+          ditto "$built_app" "$app_path"
+
+          if [[ ! -d "$widget_path" ]]; then
+            echo "Widget extension was not embedded at: $widget_path" >&2
+            exit 1
+          fi
+
+          app_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app_path/Info.plist")"
+          widget_bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$widget_path/Info.plist")"
+          extension_point="$(/usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$widget_path/Info.plist")"
+
+          echo "Main app Bundle ID: $app_bundle_id"
+          echo "Widget Bundle ID: $widget_bundle_id"
+          echo "Widget extension point: $extension_point"
+          test "$extension_point" = 'com.apple.widgetkit-extension'
+
+          echo "app_path=$app_path" >> "$GITHUB_OUTPUT"
+          echo "widget_path=$widget_path" >> "$GITHUB_OUTPUT"
+
+      - name: Apply nested ad-hoc signatures
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          app_path="${{ steps.bundle.outputs.app_path }}"
+          widget_path="${{ steps.bundle.outputs.widget_path }}"
+
+          # Sign the innermost executable bundle first.
+          codesign \
+            --force \
+            --sign - \
+            --timestamp=none \
+            --generate-entitlement-der \
+            --entitlements "$WIDGET_ENTITLEMENTS" \
+            "$widget_path"
+
+          # Sign the containing app last so its resource seal includes the signed extension.
+          codesign \
+            --force \
+            --sign - \
+            --timestamp=none \
+            --generate-entitlement-der \
+            --entitlements "$APP_ENTITLEMENTS" \
+            "$app_path"
+
+      - name: Verify signatures and IPA structure
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          app_path="${{ steps.bundle.outputs.app_path }}"
+          widget_path="${{ steps.bundle.outputs.widget_path }}"
+          report="$BUILD_ROOT/signature-report.txt"
+
+          {
+            echo '=== Nested signature verification ==='
+            codesign --verify --strict --verbose=4 "$widget_path"
+            echo '=== Complete app signature verification ==='
+            codesign --verify --deep --strict --verbose=4 "$app_path"
+            echo '=== Widget signature ==='
+            codesign -d --verbose=4 "$widget_path"
+            echo '=== Widget signed entitlements ==='
+            codesign -d --entitlements :- "$widget_path"
+            echo '=== Main app signature ==='
+            codesign -d --verbose=4 "$app_path"
+            echo '=== Main app signed entitlements ==='
+            codesign -d --entitlements :- "$app_path"
+          } 2>&1 | tee "$report"
+
+          (
+            cd "$BUILD_ROOT"
+            /usr/bin/zip -qry NinePlus-adhoc-experiment.ipa Payload
+          )
+
+          /usr/bin/unzip -t "$BUILD_ROOT/NinePlus-adhoc-experiment.ipa"
+          /usr/bin/unzip -l "$BUILD_ROOT/NinePlus-adhoc-experiment.ipa" | tee "$BUILD_ROOT/ipa-structure.txt"
+
+          /usr/bin/unzip -Z1 "$BUILD_ROOT/NinePlus-adhoc-experiment.ipa" \
+            | grep -Fx 'Payload/mini-ninebot.app/PlugIns/NinebotWidgets.appex/Info.plist'
+          /usr/bin/unzip -Z1 "$BUILD_ROOT/NinePlus-adhoc-experiment.ipa" \
+            | grep -Fx 'Payload/mini-ninebot.app/PlugIns/NinebotWidgets.appex/_CodeSignature/CodeResources'
+          /usr/bin/unzip -Z1 "$BUILD_ROOT/NinePlus-adhoc-experiment.ipa" \
+            | grep -Fx 'Payload/mini-ninebot.app/_CodeSignature/CodeResources'
+
+      - name: Print diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          echo '=== App bundles ==='
+          find "$BUILD_ROOT" -type d -name '*.app' -print 2>/dev/null
+          echo '=== App extensions ==='
+          find "$BUILD_ROOT" -type d -name '*.appex' -print 2>/dev/null
+          echo '=== Signature directories ==='
+          find "$BUILD_ROOT/Payload" -type d -name '_CodeSignature' -print 2>/dev/null
+          echo '=== Build directory ==='
+          find "$BUILD_ROOT" -maxdepth 8 -print 2>/dev/null | sort
+
+      - name: Upload ad-hoc signing experiment
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NinePlus-adhoc-experiment
+          path: |
+            build-adhoc-experiment/NinePlus-adhoc-experiment.ipa
+            build-adhoc-experiment/signature-report.txt
+            build-adhoc-experiment/ipa-structure.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload experiment diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NinePlus-adhoc-experiment-diagnostics
+          path: |
+            build-adhoc-experiment/xcodebuild-list.log
+            build-adhoc-experiment/xcodebuild.log
+            build-adhoc-experiment/signature-report.txt
+            build-adhoc-experiment/ipa-structure.txt
+          if-no-files-found: warn
+          retention-days: 14
