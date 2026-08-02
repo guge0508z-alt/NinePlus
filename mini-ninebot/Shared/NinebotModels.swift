@@ -1,9 +1,11 @@
 import CoreLocation
 import Foundation
 
+#if !NINEPLUS_SIDELOAD_FREE
 enum NinebotAppGroup {
     static let identifier = "group.com.example.NineBotPlus"
 }
+#endif
 
 enum NinebotPendingAppRoute: String, Codable {
     case dashboard

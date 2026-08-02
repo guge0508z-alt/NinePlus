@@ -11,6 +11,7 @@ import ActivityKit
 struct NinebotWidgetBundle: WidgetBundle {
     var body: some Widget {
         NinebotStatusWidget()
+#if !NINEPLUS_SIDELOAD_FREE
         NinebotLockScreenWidget()
         #if canImport(ActivityKit)
         if #available(iOS 16.1, *) {
@@ -24,6 +25,7 @@ struct NinebotWidgetBundle: WidgetBundle {
             NinebotBucketControlWidget()
             NinebotBellControlWidget()
         }
+#endif
     }
 }
 
@@ -54,6 +56,7 @@ struct NinebotLockScreenWidget: Widget {
     }
 }
 
+#if !NINEPLUS_SIDELOAD_FREE
 @available(iOS 18.0, *)
 struct NinebotRefreshControlWidget: ControlWidget {
     var body: some ControlWidgetConfiguration {
@@ -123,6 +126,7 @@ struct NinebotBellControlWidget: ControlWidget {
         .description("让当前车辆发出寻车提示音。")
     }
 }
+#endif
 
 #if canImport(ActivityKit)
 @available(iOS 16.1, *)
@@ -750,8 +754,13 @@ private struct MediumStatusWidget: View {
 
                     Spacer(minLength: 0)
 
+#if NINEPLUS_SIDELOAD_FREE
+                    MediumWidgetStatusPill(state: primary.state)
+                        .frame(height: 40)
+#else
                     MediumWidgetControlStrip(state: primary.state)
                         .frame(height: 40)
+#endif
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
@@ -830,6 +839,7 @@ private struct MediumWidgetStatusPill: View {
     }
 }
 
+#if !NINEPLUS_SIDELOAD_FREE
 private struct MediumWidgetControlStrip: View {
     var state: NinebotVehicleState
 
@@ -865,6 +875,7 @@ private struct MediumWidgetControlButton<Intent: AppIntent>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
+#endif
 
 private struct LargeStatusWidget: View {
     var dashboard: NinebotDashboard
@@ -938,8 +949,13 @@ private struct LargeStatusWidget: View {
 
                     Spacer(minLength: 0)
 
+#if NINEPLUS_SIDELOAD_FREE
+                    WidgetStatusPill(state: primary.state)
+                        .frame(height: 44)
+#else
                     WidgetLargeControlStrip(state: primary.state)
                         .frame(height: 44)
+#endif
                 }
                 .padding(14)
             }
@@ -1079,6 +1095,7 @@ private struct EmptyWidgetView: View {
     }
 }
 
+#if !NINEPLUS_SIDELOAD_FREE
 private struct WidgetLargeControlStrip: View {
     var state: NinebotVehicleState
 
@@ -1133,6 +1150,7 @@ private struct WidgetLargeControlItem<Intent: AppIntent>: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
+#endif
 
 private struct WidgetControlGrid: View {
     var state: NinebotVehicleState

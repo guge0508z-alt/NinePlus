@@ -2,6 +2,15 @@ name: Build unsigned iOS app
 
 on:
   workflow_dispatch:
+    inputs:
+      build_configuration:
+        description: Xcode build configuration
+        required: true
+        default: Release
+        type: choice
+        options:
+          - Release
+          - SideloadFree
   push:
     branches:
       - main
@@ -18,6 +27,7 @@ jobs:
     env:
       PROJECT_PATH: mini-ninebot/mini-ninebot.xcodeproj
       TARGET_NAME: mini-ninebot
+      BUILD_CONFIGURATION: ${{ inputs.build_configuration || 'Release' }}
       BUILD_ROOT: ${{ github.workspace }}/build
       DERIVED_DATA_PATH: ${{ github.workspace }}/build/DerivedData
 
@@ -51,7 +61,19 @@ jobs:
             -list \
             2>&1 | tee "$BUILD_ROOT/xcodebuild-list.log"
 
-      - name: Build unsigned Release app for iPhoneOS
+      - name: Inspect selected Widget build settings
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project "$PROJECT_PATH" \
+            -target NinebotWidgets \
+            -sdk iphoneos \
+            -configuration "$BUILD_CONFIGURATION" \
+            -showBuildSettings \
+            2>&1 | tee "$BUILD_ROOT/widget-build-settings.log"
+
+      - name: Build unsigned app for iPhoneOS
         id: xcodebuild
         shell: bash
         run: |
@@ -60,7 +82,7 @@ jobs:
             -project "$PROJECT_PATH" \
             -target "$TARGET_NAME" \
             -sdk iphoneos \
-            -configuration Release \
+            -configuration "$BUILD_CONFIGURATION" \
             SYMROOT="$DERIVED_DATA_PATH/Build/Products" \
             OBJROOT="$DERIVED_DATA_PATH/Build/Intermediates.noindex" \
             SHARED_PRECOMPS_DIR="$DERIVED_DATA_PATH/Build/Intermediates.noindex/PrecompiledHeaders" \
@@ -158,6 +180,7 @@ jobs:
           path: |
             build/toolchain.log
             build/xcodebuild-list.log
+            build/widget-build-settings.log
             build/xcodebuild.log
           if-no-files-found: warn
           retention-days: 14

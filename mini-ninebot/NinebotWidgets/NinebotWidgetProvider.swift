@@ -17,6 +17,44 @@ struct NinebotWidgetEntry: TimelineEntry {
 }
 
 struct NinebotTimelineProvider: TimelineProvider {
+#if NINEPLUS_SIDELOAD_FREE
+    func placeholder(in context: Context) -> NinebotWidgetEntry {
+        testEntry()
+    }
+
+    func getSnapshot(in context: Context, completion: @escaping (NinebotWidgetEntry) -> Void) {
+        completion(testEntry())
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<NinebotWidgetEntry>) -> Void) {
+        let entry = testEntry()
+        let nextRefresh = Date().addingTimeInterval(30 * 60)
+        completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
+    }
+
+    private func testEntry() -> NinebotWidgetEntry {
+        var dashboard = NinebotDashboard.preview
+        var snapshot = dashboard.vehicles[0]
+        snapshot.vehicle.sn = "SIDELOAD-FREE"
+        snapshot.vehicle.name = "Nz MIX"
+        snapshot.vehicle.model = "Nz MIX"
+        snapshot.vehicle.imageURLString = nil
+        snapshot.vehicle.raw = nil
+        snapshot.state.battery = 58
+        snapshot.state.endurance = 33
+        snapshot.state.aiEstimatedMileage = nil
+        snapshot.state.serverPrediction = nil
+        snapshot.state.isCharging = false
+        snapshot.state.isPoweredOn = false
+        snapshot.state.isLocked = true
+        snapshot.state.updatedAt = Date()
+        snapshot.state.isStale = false
+        dashboard.vehicles = [snapshot]
+        dashboard.selectedSN = snapshot.vehicle.sn
+        dashboard.updatedAt = snapshot.state.updatedAt
+        return NinebotWidgetEntry(date: Date(), dashboard: dashboard, errorMessage: nil)
+    }
+#else
     func placeholder(in context: Context) -> NinebotWidgetEntry {
         NinebotWidgetEntry(date: Date(), dashboard: .preview, errorMessage: nil)
     }
@@ -67,4 +105,5 @@ struct NinebotTimelineProvider: TimelineProvider {
             return (snapshot.vehicle.sn, data)
         })
     }
+#endif
 }
