@@ -35,7 +35,6 @@ jobs:
           xcodebuild -version
           xcode-select -p
           xcodebuild -showsdks
-          codesign --version
 
       - name: List Xcode project information
         shell: bash
