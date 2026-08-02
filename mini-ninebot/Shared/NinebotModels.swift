@@ -993,6 +993,7 @@ struct NinebotVehicleState: Codable, Equatable {
     var rideRecords: [NinebotRideRecord]?
     var dailyMileageRecords: [NinebotDailyMileageRecord]?
     var updatedAt: Date
+    var isStale: Bool? = nil
     var rawStatus: [String: JSONValue]?
     var rawTravel: [String: JSONValue]?
     var rawBattery: [String: JSONValue]?

@@ -35,7 +35,7 @@ struct NinebotStatusWidget: Widget {
             NinebotHomeWidgetView(entry: entry)
         }
         .configurationDisplayName("九号车况")
-        .description("显示车辆电量、续航和更新时间。")
+        .description("显示车辆名称、图片、电量、续航、锁车状态和更新时间。")
         .supportedFamilies([.systemSmall, .systemMedium, .systemLarge])
         .contentMarginsDisabled()
     }
@@ -485,19 +485,26 @@ private struct NinebotHomeWidgetView: View {
     var body: some View {
         Group {
             if let snapshot = entry.dashboard.primaryVehicle {
+                let isDataStale = entry.dataIsStale(for: snapshot)
                 switch family {
                 case .systemSmall:
                     SmallStatusWidget(
                         snapshot: snapshot,
-                        vehicleImageData: entry.vehicleImages[snapshot.vehicle.sn]
+                        vehicleImageData: entry.vehicleImages[snapshot.vehicle.sn],
+                        isDataStale: isDataStale
                     )
                 case .systemLarge:
                     LargeStatusWidget(
                         dashboard: entry.dashboard,
-                        vehicleImages: entry.vehicleImages
+                        vehicleImages: entry.vehicleImages,
+                        isDataStale: isDataStale
                     )
                 default:
-                    MediumStatusWidget(dashboard: entry.dashboard)
+                    MediumStatusWidget(
+                        dashboard: entry.dashboard,
+                        vehicleImageData: entry.vehicleImages[snapshot.vehicle.sn],
+                        isDataStale: isDataStale
+                    )
                 }
             } else {
                 EmptyWidgetView(message: entry.errorMessage ?? "暂无车辆")
@@ -510,6 +517,7 @@ private struct NinebotHomeWidgetView: View {
 private struct SmallStatusWidget: View {
     var snapshot: NinebotVehicleSnapshot
     var vehicleImageData: Data?
+    var isDataStale: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -526,7 +534,7 @@ private struct SmallStatusWidget: View {
                 .frame(width: 154, height: 94)
                 .offset(x: 48, y: 42)
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(snapshot.vehicle.name)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(smallWidgetSecondaryText(for: colorScheme))
@@ -556,19 +564,27 @@ private struct SmallStatusWidget: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                Spacer(minLength: 34)
+                Spacer(minLength: isDataStale ? 14 : 26)
 
-                Text(formatWidgetTime(snapshot.state.updatedAt))
-                    .font(.caption2.monospacedDigit().weight(.semibold))
-                    .foregroundStyle(smallWidgetTimeText(for: colorScheme))
-                    .lineLimit(1)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(smallWidgetTimeBackground(for: colorScheme))
-                    .clipShape(Capsule())
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    Label(widgetLockText(snapshot.state), systemImage: widgetLockImage(snapshot.state))
+                    Spacer(minLength: 2)
+                    Text(formatWidgetTime(snapshot.state.updatedAt))
+                        .monospacedDigit()
+                }
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(smallWidgetTimeText(for: colorScheme))
+                .lineLimit(1)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(smallWidgetTimeBackground(for: colorScheme))
+                .clipShape(Capsule())
+
+                if isDataStale {
+                    WidgetFreshnessWarning(compact: true)
+                }
             }
-            .padding(16)
+            .padding(14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
@@ -590,15 +606,12 @@ private struct SmallWidgetBatteryRing: View {
                 .stroke(activeColor, style: StrokeStyle(lineWidth: 5, lineCap: .round))
                 .rotationEffect(.degrees(-90))
 
-            if isCharging {
-                Image(systemName: "bolt.fill")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(WidgetTheme.green)
-            } else {
-                Circle()
-                    .fill(smallWidgetBackground(for: colorScheme))
-                    .frame(width: 12, height: 12)
-            }
+            Text(battery.map { "\($0)%" } ?? "--")
+                .font(.system(size: 7, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(isCharging ? WidgetTheme.green : smallWidgetPrimaryText(for: colorScheme))
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
         }
     }
 
@@ -659,6 +672,8 @@ private func smallWidgetTimeBackground(for colorScheme: ColorScheme) -> Color {
 
 private struct MediumStatusWidget: View {
     var dashboard: NinebotDashboard
+    var vehicleImageData: Data?
+    var isDataStale: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -698,8 +713,15 @@ private struct MediumStatusWidget: View {
                                     .foregroundStyle(WidgetTheme.secondaryText)
                                     .lineLimit(1)
                             }
+
+                            if isDataStale {
+                                WidgetFreshnessWarning(compact: true)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+
+                        WidgetVehicleImage(imageData: vehicleImageData)
+                            .frame(width: 88, height: 54)
 
                         VStack(alignment: .trailing, spacing: 3) {
                             Text("\(formatWidgetTime(primary.state.updatedAt)) 更新")
@@ -716,7 +738,7 @@ private struct MediumStatusWidget: View {
 
                             MediumWidgetStatusPill(state: primary.state)
                         }
-                        .frame(width: 108, alignment: .trailing)
+                        .frame(width: 86, alignment: .trailing)
                     }
 
                     MediumBatteryProgressBar(
@@ -798,11 +820,7 @@ private struct MediumWidgetStatusPill: View {
     }
 
     private var statusText: String {
-        if state.isFullyCharged { return "电量已充满" }
-        if state.isCharging == true { return "正在充电" }
-        if state.isLocked == true { return "守卫模式已开启" }
-        if state.isLocked == false { return "车辆未上锁" }
-        return widgetStatusText(state)
+        widgetLockText(state)
     }
 
     private var statusDotColor: Color {
@@ -851,6 +869,7 @@ private struct MediumWidgetControlButton<Intent: AppIntent>: View {
 private struct LargeStatusWidget: View {
     var dashboard: NinebotDashboard
     var vehicleImages: [String: Data] = [:]
+    var isDataStale: Bool
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -875,6 +894,14 @@ private struct LargeStatusWidget: View {
                             Text("\(formatWidgetTime(primary.state.updatedAt)) 更新")
                                 .font(.caption.weight(.medium))
                                 .foregroundStyle(WidgetTheme.secondaryText)
+
+                            Label(widgetLockText(primary.state), systemImage: widgetLockImage(primary.state))
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(statusColor(primary.state))
+
+                            if isDataStale {
+                                WidgetFreshnessWarning()
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -928,6 +955,7 @@ private struct NinebotAccessoryWidgetView: View {
 
     var body: some View {
         let snapshot = entry.dashboard.primaryVehicle
+        let isDataStale = snapshot.map { entry.dataIsStale(for: $0) } ?? false
 
         Group {
             switch family {
@@ -935,12 +963,16 @@ private struct NinebotAccessoryWidgetView: View {
                 AccessoryCircularStatus(snapshot: snapshot)
             case .accessoryInline:
                 if let snapshot {
-                    Label("\(snapshot.vehicle.name) \(snapshot.state.batteryText) \(compactWidgetStatus(snapshot.state))", systemImage: widgetStatusImage(snapshot.state))
+                    if isDataStale {
+                        Label("\(snapshot.vehicle.name) 数据可能不是最新", systemImage: "exclamationmark.triangle.fill")
+                    } else {
+                        Label("\(snapshot.vehicle.name) \(snapshot.state.batteryText) \(compactWidgetStatus(snapshot.state))", systemImage: widgetStatusImage(snapshot.state))
+                    }
                 } else {
                     Label("九号暂无数据", systemImage: "bolt.car.fill")
                 }
             default:
-                AccessoryRectangularStatus(snapshot: snapshot)
+                AccessoryRectangularStatus(snapshot: snapshot, isDataStale: isDataStale)
             }
         }
         .containerBackground(.fill.tertiary, for: .widget)
@@ -949,6 +981,7 @@ private struct NinebotAccessoryWidgetView: View {
 
 private struct AccessoryRectangularStatus: View {
     var snapshot: NinebotVehicleSnapshot?
+    var isDataStale: Bool
 
     var body: some View {
         if let snapshot {
@@ -963,7 +996,7 @@ private struct AccessoryRectangularStatus: View {
                         .font(.headline.weight(.semibold))
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
-                    Text(accessoryRectangularText(snapshot))
+                    Text(isDataStale ? "数据可能不是最新" : accessoryRectangularText(snapshot))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1014,6 +1047,18 @@ private struct AccessoryCircularStatus: View {
             .foregroundStyle(.primary)
             .widgetAccentable()
         }
+    }
+}
+
+private struct WidgetFreshnessWarning: View {
+    var compact = false
+
+    var body: some View {
+        Label("数据可能不是最新", systemImage: "exclamationmark.triangle.fill")
+            .font(compact ? .system(size: 8, weight: .semibold) : .caption2.weight(.semibold))
+            .foregroundStyle(.orange)
+            .lineLimit(1)
+            .minimumScaleFactor(0.58)
     }
 }
 
@@ -1337,6 +1382,18 @@ private func widgetStatusText(_ state: NinebotVehicleState) -> String {
     if state.isLocked == true { return "已上锁" }
     if state.isLocked == false { return "未上锁" }
     return state.health.title
+}
+
+private func widgetLockText(_ state: NinebotVehicleState) -> String {
+    if state.isLocked == true { return "已锁车" }
+    if state.isLocked == false { return "未锁车" }
+    return "锁车状态未知"
+}
+
+private func widgetLockImage(_ state: NinebotVehicleState) -> String {
+    if state.isLocked == true { return "lock.fill" }
+    if state.isLocked == false { return "lock.open.fill" }
+    return "lock.slash"
 }
 
 private func widgetStatusImage(_ state: NinebotVehicleState) -> String {

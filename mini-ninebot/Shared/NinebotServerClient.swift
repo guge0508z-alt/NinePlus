@@ -138,7 +138,8 @@ struct NinebotServerClient {
                 travel: travel,
                 battery: battery,
                 prediction: prediction,
-                updatedAt: Self.serverDateValue(dashboardObject?["updated_at"] ?? dashboardObject?["updatedAt"]) ?? Date()
+                updatedAt: Self.serverDateValue(dashboardObject?["updated_at"] ?? dashboardObject?["updatedAt"]) ?? Date(),
+                isStale: [dashboard, status, battery, travel].contains(where: Self.staleFlag)
             )
             if let totalMileage = Self.totalMileage(fromMonthlyTravels: monthlyTravels) {
                 state.totalMileage = totalMileage
@@ -418,6 +419,12 @@ private extension NinebotServerClient {
         ) != nil || firstArrayObject(["battery_list", "batteryList", "batteries"], in: object) != nil
     }
 
+    static func staleFlag(_ value: JSONValue?) -> Bool {
+        guard let object = value?.objectValue else { return false }
+        if object["stale"]?.boolValue == true { return true }
+        return object["data"]?.objectValue?["stale"]?.boolValue == true
+    }
+
     static func vehicleInfo(from value: JSONValue) -> NinebotVehicleInfo? {
         guard let object = value.objectValue else { return nil }
         guard let sn = firstString(["wnumber", "sn"], in: object), !sn.isEmpty else {
@@ -549,7 +556,8 @@ private extension NinebotServerClient {
         travel: JSONValue?,
         battery: JSONValue? = nil,
         prediction: NinebotServerPrediction? = nil,
-        updatedAt: Date
+        updatedAt: Date,
+        isStale: Bool? = nil
     ) -> NinebotVehicleState {
         let statusRoot = status?.objectValue ?? [:]
         let statusObject = payloadObject(statusRoot, preferredKeys: ["status", "vehicle_status", "vehicleStatus", "data"])
@@ -655,6 +663,7 @@ private extension NinebotServerClient {
             rideRecords: rideRecords.isEmpty ? nil : rideRecords,
             dailyMileageRecords: dailyMileageRecords.isEmpty ? nil : dailyMileageRecords,
             updatedAt: updatedAt,
+            isStale: isStale,
             rawStatus: statusRoot.isEmpty ? nil : statusRoot,
             rawTravel: travelObject.isEmpty ? nil : travelObject,
             rawBattery: batteryRoot.isEmpty ? nil : batteryRoot,

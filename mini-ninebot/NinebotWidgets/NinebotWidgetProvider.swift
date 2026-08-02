@@ -2,21 +2,21 @@ import Foundation
 import WidgetKit
 
 struct NinebotWidgetEntry: TimelineEntry {
+    private static let expirationInterval: TimeInterval = 30 * 60
+
     var date: Date
     var dashboard: NinebotDashboard
     var errorMessage: String?
     var vehicleImages: [String: Data] = [:]
+
+    func dataIsStale(for snapshot: NinebotVehicleSnapshot) -> Bool {
+        if snapshot.state.isStale == true { return true }
+        if snapshot.state.updatedAt == .distantPast { return true }
+        return date.timeIntervalSince(snapshot.state.updatedAt) > Self.expirationInterval
+    }
 }
 
 struct NinebotTimelineProvider: TimelineProvider {
-    private static let refreshSession: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 8
-        configuration.timeoutIntervalForResource = 12
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: configuration)
-    }()
-
     func placeholder(in context: Context) -> NinebotWidgetEntry {
         NinebotWidgetEntry(date: Date(), dashboard: .preview, errorMessage: nil)
     }
@@ -33,13 +33,11 @@ struct NinebotTimelineProvider: TimelineProvider {
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<NinebotWidgetEntry>) -> Void) {
-        Task {
-            let entry = await loadEntry()
-            let refreshMinutes = refreshIntervalMinutes(for: entry.dashboard.primaryVehicle?.state)
-            let nextRefresh = Calendar.current.date(byAdding: .minute, value: refreshMinutes, to: Date())
-                ?? Date().addingTimeInterval(TimeInterval(refreshMinutes * 60))
-            completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
-        }
+        let entry = loadEntry()
+        let refreshMinutes = refreshIntervalMinutes(for: entry.dashboard.primaryVehicle?.state)
+        let nextRefresh = Calendar.current.date(byAdding: .minute, value: refreshMinutes, to: Date())
+            ?? Date().addingTimeInterval(TimeInterval(refreshMinutes * 60))
+        completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
     }
 
     private func refreshIntervalMinutes(for state: NinebotVehicleState?) -> Int {
@@ -50,93 +48,15 @@ struct NinebotTimelineProvider: TimelineProvider {
         return 20
     }
 
-    private func loadEntry() async -> NinebotWidgetEntry {
-        let startedAt = Date()
+    private func loadEntry() -> NinebotWidgetEntry {
         let store = NinebotSharedStore()
-        let cached = store.loadDashboard()
-        let configuration = store.loadConfiguration() ?? NinebotServerConfiguration(baseURLString: "", bearerToken: "")
-
-        guard configuration.isUsable else {
-            store.saveLastWidgetRefreshEvent(NinebotRefreshEvent(
-                source: "Widget",
-                operation: "刷新小组件",
-                startedAt: startedAt,
-                endedAt: Date(),
-                success: false,
-                message: "未配置服务器"
-            ))
-            return NinebotWidgetEntry(
-                date: Date(),
-                dashboard: cached ?? .empty,
-                errorMessage: store.loadLastError(),
-                vehicleImages: cached.map { cachedVehicleImages(for: $0, store: store) } ?? [:]
-            )
-        }
-
-        do {
-            let dashboard = try await NinebotServerClient(configuration: configuration, session: Self.refreshSession)
-                .fetchDashboard(selectedSN: cached?.selectedSN)
-            let archivedDashboard = store.saveDashboard(dashboard)
-            store.saveLastWidgetRefreshEvent(NinebotRefreshEvent(
-                source: "Widget",
-                operation: "刷新小组件",
-                startedAt: startedAt,
-                endedAt: Date(),
-                success: true,
-                message: archivedDashboard.primaryVehicle?.vehicle.name
-            ))
-            return NinebotWidgetEntry(
-                date: Date(),
-                dashboard: archivedDashboard,
-                errorMessage: nil,
-                vehicleImages: await vehicleImages(for: archivedDashboard, store: store)
-            )
-        } catch {
-            let message = error.localizedDescription
-            store.saveLastError(message)
-            store.saveLastWidgetRefreshEvent(NinebotRefreshEvent(
-                source: "Widget",
-                operation: "刷新小组件",
-                startedAt: startedAt,
-                endedAt: Date(),
-                success: false,
-                message: message
-            ))
-            return NinebotWidgetEntry(
-                date: Date(),
-                dashboard: cached ?? .empty,
-                errorMessage: message,
-                vehicleImages: cached.map { cachedVehicleImages(for: $0, store: store) } ?? [:]
-            )
-        }
-    }
-
-    private func vehicleImages(for dashboard: NinebotDashboard, store: NinebotSharedStore) async -> [String: Data] {
-        var images = cachedVehicleImages(for: dashboard, store: store)
-
-        for snapshot in dashboard.vehicles {
-            guard let urlString = snapshot.vehicle.imageURLString,
-                  let url = URL(string: urlString) else {
-                continue
-            }
-
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                guard let httpResponse = response as? HTTPURLResponse,
-                      (200..<300).contains(httpResponse.statusCode),
-                      !data.isEmpty,
-                      data.count <= 2_500_000 else {
-                    continue
-                }
-
-                store.saveVehicleImageData(data, sn: snapshot.vehicle.sn)
-                images[snapshot.vehicle.sn] = data
-            } catch {
-                continue
-            }
-        }
-
-        return images
+        let dashboard = store.loadDashboard() ?? .empty
+        return NinebotWidgetEntry(
+            date: Date(),
+            dashboard: dashboard,
+            errorMessage: store.loadLastError(),
+            vehicleImages: cachedVehicleImages(for: dashboard, store: store)
+        )
     }
 
     private func cachedVehicleImages(for dashboard: NinebotDashboard, store: NinebotSharedStore) -> [String: Data] {
