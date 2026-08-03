@@ -2,6 +2,18 @@
 
 本文档用于把 NinePlus Server 部署到腾讯云 Ubuntu 24.04 LTS，并通过 systemd 长期运行。以下命令默认仓库放在 `/opt/NinePlus`，服务用户为 `nineplus`。
 
+## 全链路联调状态（2026-08-03）
+
+NinePlus 已完成腾讯云 Ubuntu 环境的全链路联调，验证结果如下：
+
+- NinePlus Server 已在腾讯云 Ubuntu 上通过 systemd 稳定运行。
+- iOS App 可以通过公网 HTTP 访问服务端，ATS 测试配置已验证生效。
+- NinePlus API Key 的 Bearer 鉴权正常，未授权请求会被拒绝。
+- `GET /vehicles`、Dashboard、Battery 和 Travel 数据链路均已验证正常。
+- 本次联调仍使用 HTTP，仅用于当前测试阶段；正式公网使用仍建议迁移到 HTTPS。
+
+验证记录不包含公网 IP、API Key、九号账号、Token 或其他敏感信息。
+
 ## 1. 部署前说明
 
 - 推荐 Python 3.12（Ubuntu 24.04 默认版本）。
