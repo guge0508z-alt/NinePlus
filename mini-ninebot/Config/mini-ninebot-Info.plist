@@ -30,8 +30,6 @@
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
 	</dict>
 	<key>NSSiriUsageDescription</key>
 	<string>用于通过 Siri 和快捷指令刷新车况、查询电量、查询位置、寻车铃、开座桶、上电和熄火。</string>
