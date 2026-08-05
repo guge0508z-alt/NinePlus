@@ -1,12 +1,14 @@
 """NinePlus 局域网模拟服务器。"""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import hmac
 import logging
 import os
 from typing import Literal
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -19,7 +21,14 @@ from adapters.ninebot_mapper import (
     map_ninebot_vehicles,
 )
 from services.cache_service import CacheMetadata
+from services.database_service import (
+    DatabaseReadError,
+    DatabaseService,
+    VehicleHistoryRecord,
+)
 from services.ninebot_service import NinebotService, NinebotServiceError
+from services.telemetry_collector import TelemetryCollector
+from services.telemetry_scheduler import TelemetryScheduler
 
 
 def _environment_flag(name: str, default: bool = False) -> bool:
@@ -34,6 +43,9 @@ NINEPLUS_API_KEY = os.getenv("NINEPLUS_API_KEY", "").strip()
 TEST_SESSION_TOKEN = "test-session-token"
 LOGGER = logging.getLogger(__name__)
 NINEBOT_SERVICE = NinebotService()
+DATABASE_SERVICE = DatabaseService()
+TELEMETRY_COLLECTOR = TelemetryCollector(DATABASE_SERVICE, NINEBOT_SERVICE)
+TELEMETRY_SCHEDULER = TelemetryScheduler.from_environment(TELEMETRY_COLLECTOR)
 
 
 class HealthData(BaseModel):
@@ -73,6 +85,43 @@ class HealthResponse(BaseModel):
 class LoginResponse(BaseModel):
     ok: Literal[True]
     data: LoginData
+
+
+class InternalCollectionData(BaseModel):
+    result: Literal["success", "partial", "failure"]
+    inserted_count: int
+    success: bool
+
+
+class InternalCollectionResponse(BaseModel):
+    ok: Literal[True]
+    data: InternalCollectionData
+
+
+class HistoryLocationData(BaseModel):
+    latitude: float
+    longitude: float
+
+
+class HistorySnapshotData(BaseModel):
+    collected_at: datetime
+    battery_percent: int | None
+    battery_voltage: float | None
+    battery_temperature: float | None
+    estimated_range_km: float | None
+    location: HistoryLocationData | None
+    source: Literal["ninebot", "cache"] | None
+    stale: bool
+
+
+class HistoryData(BaseModel):
+    sn: str
+    list: list[HistorySnapshotData]
+
+
+class HistoryResponse(BaseModel):
+    ok: Literal[True]
+    data: HistoryData
 
 
 class VehiclesData(BaseModel):
@@ -244,10 +293,68 @@ def _cache_metadata_fields(metadata: CacheMetadata) -> dict[str, object]:
     }
 
 
+def _datetime_to_milliseconds(value: datetime) -> int:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return int(value.timestamp() * 1_000)
+
+
+def _history_snapshot_data(snapshot: VehicleHistoryRecord) -> HistorySnapshotData:
+    sources = {snapshot.status_source, snapshot.battery_source}
+    if "cache" in sources:
+        source: Literal["ninebot", "cache"] | None = "cache"
+    elif "ninebot" in sources:
+        source = "ninebot"
+    else:
+        source = None
+    location = (
+        HistoryLocationData(
+            latitude=snapshot.latitude,
+            longitude=snapshot.longitude,
+        )
+        if snapshot.latitude is not None and snapshot.longitude is not None
+        else None
+    )
+    return HistorySnapshotData(
+        collected_at=datetime.fromtimestamp(
+            snapshot.collected_at_ms / 1_000,
+            tz=timezone.utc,
+        ),
+        battery_percent=snapshot.battery_percent,
+        battery_voltage=snapshot.battery_voltage,
+        battery_temperature=snapshot.battery_temperature,
+        estimated_range_km=snapshot.estimated_range_km,
+        location=location,
+        source=source,
+        stale=snapshot.status_stale or snapshot.battery_stale,
+    )
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Initialize persistent storage before accepting API requests."""
+    database_info = await DATABASE_SERVICE.initialize()
+    application.state.database_service = DATABASE_SERVICE
+    application.state.database_info = database_info
+    LOGGER.info(
+        "database initialized path=%s schema_version=%s journal_mode=%s",
+        database_info.path,
+        database_info.schema_version,
+        database_info.journal_mode,
+    )
+    await TELEMETRY_SCHEDULER.start()
+    application.state.telemetry_scheduler = TELEMETRY_SCHEDULER
+    try:
+        yield
+    finally:
+        await TELEMETRY_SCHEDULER.stop()
+
+
 app = FastAPI(
     title="NinePlus Test Server",
     description="用于验证 NinePlus iOS App 能否连接 Windows 电脑。",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 
@@ -281,6 +388,20 @@ async def healthz() -> HealthResponse:
     )
 
 
+@app.post("/internal/collect", response_model=InternalCollectionResponse)
+async def collect_internal_telemetry() -> InternalCollectionResponse:
+    """Run one authenticated internal telemetry collection."""
+    summary = await TELEMETRY_COLLECTOR.collect_once()
+    return InternalCollectionResponse(
+        ok=True,
+        data=InternalCollectionData(
+            result=summary.result,
+            inserted_count=summary.inserted_count,
+            success=summary.result == "success",
+        ),
+    )
+
+
 @app.post("/accounts/login", response_model=LoginResponse)
 async def login(credentials: LoginRequest) -> LoginResponse | JSONResponse:
     """为任意非空测试凭据创建无状态客户端会话。"""
@@ -307,6 +428,40 @@ async def login(credentials: LoginRequest) -> LoginResponse | JSONResponse:
             business_uid="TEST-BUSINESS-UID",
             account_id=1,
             session_token=TEST_SESSION_TOKEN,
+        ),
+    )
+
+
+@app.get("/vehicles/{sn}/history", response_model=HistoryResponse)
+async def vehicle_history(
+    sn: str,
+    from_time: datetime | None = Query(default=None, alias="from"),
+    to_time: datetime | None = Query(default=None, alias="to"),
+    limit: int = Query(default=288, ge=1, le=1_000),
+) -> HistoryResponse | JSONResponse:
+    """Return persisted snapshots for one known vehicle."""
+    from_ms = _datetime_to_milliseconds(from_time) if from_time is not None else None
+    to_ms = _datetime_to_milliseconds(to_time) if to_time is not None else None
+    if from_ms is not None and to_ms is not None and from_ms > to_ms:
+        raise HTTPException(status_code=422, detail="from must not be after to")
+
+    try:
+        history = await DATABASE_SERVICE.query_vehicle_history(
+            sn,
+            from_ms=from_ms,
+            to_ms=to_ms,
+            limit=limit,
+        )
+    except DatabaseReadError as error:
+        return _service_unavailable("history", error, sn)
+
+    if not history.vehicle_exists:
+        return _vehicle_not_found()
+    return HistoryResponse(
+        ok=True,
+        data=HistoryData(
+            sn=sn,
+            list=[_history_snapshot_data(snapshot) for snapshot in history.snapshots],
         ),
     )
 
