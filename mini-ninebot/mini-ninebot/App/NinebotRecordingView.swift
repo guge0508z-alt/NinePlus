@@ -148,6 +148,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
     private var lastSpeedMPS: Double?
     private var lastAcceptedLocationAt: Date?
     private var smoothedSpeedMPS: Double?
+    private var stationarySpeedSampleCount = 0
     private var speedSamples: [Double] = []
     private var lastMotionTimestamp: TimeInterval?
     private var smoothedMotionG: Double?
@@ -170,6 +171,8 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
     private let stationarySpeedThresholdMPS = 0.8
     private let maximumDisplayedAccelerationMPS2 = 4.5
     private let maximumDisplayedDecelerationMPS2 = 7.0
+    private let maximumRawAccelerationMPS2 = 8.0
+    private let maximumRawDecelerationMPS2 = 12.0
     private let maximumMotionSampleGap: TimeInterval = 0.75
     private let motionCooldownDuration: TimeInterval = 1.1
 
@@ -286,6 +289,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         lastLocation = nil
         lastSpeedMPS = nil
         smoothedSpeedMPS = nil
+        stationarySpeedSampleCount = 0
         lastAcceptedLocationAt = nil
         lastMotionTimestamp = nil
         smoothedMotionG = nil
@@ -524,6 +528,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         }
         lastSpeedMPS = nil
         smoothedSpeedMPS = nil
+        stationarySpeedSampleCount = 0
         gpsQuality = .weak
         ignoreLocationUntil = Date().addingTimeInterval(recoveryCooldownDuration)
     }
@@ -544,6 +549,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         ignoreMotionUntil = Date().addingTimeInterval(motionCooldownDuration)
         lastSpeedMPS = nil
         smoothedSpeedMPS = nil
+        stationarySpeedSampleCount = 0
         smoothedMotionG = nil
         currentSpeedKmh = 0
         currentAccelerationG = 0
@@ -560,6 +566,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         lastLocation = location
         lastSpeedMPS = nil
         smoothedSpeedMPS = nil
+        stationarySpeedSampleCount = 0
         lastAcceptedLocationAt = location.timestamp
         gpsQuality = quality
 
@@ -578,14 +585,6 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         deltaTime: TimeInterval,
         segmentDistance: Double
     ) -> Double? {
-        if location.speed >= 0,
-           location.speedAccuracy >= 0,
-           location.speedAccuracy <= 6,
-           location.horizontalAccuracy <= maximumHorizontalAccuracy,
-           location.speed * 3.6 <= maximumReasonableSpeedKmh {
-            return max(location.speed, 0)
-        }
-
         guard deltaTime >= minimumLocationDeltaTime,
               deltaTime <= maximumLocationDeltaTimeForSpeed,
               segmentDistance >= 0,
@@ -600,10 +599,69 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
               impliedSpeedMPS * 3.6 <= maximumReasonableSpeedKmh else {
             return nil
         }
-        return max(impliedSpeedMPS, 0)
+
+        let worstAccuracy = max(location.horizontalAccuracy, previousLocation.horizontalAccuracy)
+        let movementNoiseRadius = min(max(worstAccuracy * 0.25, 2), 8)
+        let stationaryNoiseRadius = min(max(worstAccuracy * 0.5, 3), 12)
+        let hasReliableLocationSpeed = location.speed >= 0
+            && location.speedAccuracy >= 0
+            && location.speedAccuracy <= 6
+            && location.speed * 3.6 <= maximumReasonableSpeedKmh
+
+        let candidate: Double
+        if hasReliableLocationSpeed {
+            let speedTolerance = max(
+                2.5,
+                location.speedAccuracy * 2 + movementNoiseRadius / max(deltaTime, 1)
+            )
+
+            if location.speed < stationarySpeedThresholdMPS,
+               segmentDistance <= stationaryNoiseRadius {
+                candidate = 0
+            } else if abs(location.speed - impliedSpeedMPS) <= speedTolerance {
+                candidate = location.speed
+            } else if location.speed < stationarySpeedThresholdMPS {
+                return nil
+            } else {
+                candidate = impliedSpeedMPS
+            }
+        } else {
+            candidate = segmentDistance <= movementNoiseRadius ? 0 : impliedSpeedMPS
+        }
+
+        guard isPlausibleSpeedChange(candidate, deltaTime: deltaTime) else {
+            return nil
+        }
+        return max(candidate, 0)
+    }
+
+    private func isPlausibleSpeedChange(_ candidate: Double, deltaTime: TimeInterval) -> Bool {
+        guard candidate.isFinite,
+              candidate >= 0,
+              candidate * 3.6 <= maximumReasonableSpeedKmh else {
+            return false
+        }
+        guard let previous = smoothedSpeedMPS ?? lastSpeedMPS else {
+            return true
+        }
+
+        let maximumChange = (candidate >= previous ? maximumRawAccelerationMPS2 : maximumRawDecelerationMPS2)
+            * max(deltaTime, minimumLocationDeltaTime)
+        return abs(candidate - previous) <= maximumChange
     }
 
     private func smoothedSpeed(_ rawSpeedMPS: Double, deltaTime: TimeInterval) -> Double {
+        if rawSpeedMPS == 0 {
+            stationarySpeedSampleCount += 1
+        } else {
+            stationarySpeedSampleCount = 0
+        }
+
+        if stationarySpeedSampleCount >= 2 {
+            smoothedSpeedMPS = 0
+            return 0
+        }
+
         guard let previous = smoothedSpeedMPS else {
             smoothedSpeedMPS = rawSpeedMPS
             return rawSpeedMPS
@@ -645,24 +703,19 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         let worstAccuracy = max(location.horizontalAccuracy, previousLocation.horizontalAccuracy)
         let movementNoiseRadius = min(max(worstAccuracy * 0.25, 2), 8)
         let stationaryNoiseRadius = min(max(worstAccuracy * 0.5, 3), 12)
-        let hasReliableReportedSpeed = location.speed >= 0
-            && location.speedAccuracy >= 0
-            && location.speedAccuracy <= 6
+        let speedAccuracyAllowance = location.speedAccuracy >= 0
+            ? min(location.speedAccuracy, 6) * 2
+            : 0
+        let speedTolerance = max(
+            2.5,
+            speedAccuracyAllowance + movementNoiseRadius / max(deltaTime, 1)
+        )
+        guard abs(speedMPS - impliedSpeedMPS) <= speedTolerance else {
+            return false
+        }
 
-        if hasReliableReportedSpeed {
-            let speedTolerance = max(
-                5,
-                location.speedAccuracy * 2 + movementNoiseRadius / max(deltaTime, 1)
-            )
-            guard abs(location.speed - impliedSpeedMPS) <= speedTolerance else {
-                return false
-            }
-
-            if location.speed < stationarySpeedThresholdMPS,
-               segmentDistance <= stationaryNoiseRadius {
-                return false
-            }
-        } else if segmentDistance <= movementNoiseRadius {
+        if speedMPS < stationarySpeedThresholdMPS,
+           segmentDistance <= stationaryNoiseRadius {
             return false
         }
 
@@ -799,7 +852,18 @@ private struct RecordingSpeedGauge: View {
                 .shadow(color: Color.teslaGreen.opacity(isRecording ? 0.55 : 0.18), radius: isRecording ? 18 : 6)
 
             VStack(spacing: 6) {
-                Text(formatRecordingSpeed(speedKmh, showsUnit: false))
+                Text("当前速度")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.teslaSecondaryText)
+
+                Text(
+                    formatRecordingNumber(
+                        speedKmh,
+                        unit: "",
+                        maximumFractionDigits: 1,
+                        minimumFractionDigits: 1
+                    )
+                )
                     .font(.system(size: 72, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(Color.teslaPrimaryText)
@@ -1252,6 +1316,8 @@ private struct RecordedRideTrackMap: View {
     var record: NinebotRecordedRide
     @State private var cameraPosition: MapCameraPosition
     @State private var playbackProgress: Double = 1
+    @State private var isPlaying = false
+    @State private var playbackTask: Task<Void, Never>?
 
     init(record: NinebotRecordedRide) {
         self.record = record
@@ -1323,10 +1389,23 @@ private struct RecordedRideTrackMap: View {
 
             if record.recordingCoordinates.count > 1 {
                 HStack(spacing: 10) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(Color.teslaGreen)
-                    Slider(value: $playbackProgress, in: 0...1)
+                    Button(action: togglePlayback) {
+                        Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(Color.teslaGreen)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isPlaying ? "暂停轨迹回放" : "播放轨迹回放")
+
+                    Slider(
+                        value: $playbackProgress,
+                        in: 0...1,
+                        onEditingChanged: { isEditing in
+                            if isEditing {
+                                pausePlayback()
+                            }
+                        }
+                    )
                         .tint(Color.teslaGreen)
                     Text(playbackTimeText)
                         .font(.caption.monospacedDigit().weight(.semibold))
@@ -1342,6 +1421,68 @@ private struct RecordedRideTrackMap: View {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(Color.teslaHairline, lineWidth: 1)
         }
+        .onDisappear {
+            playbackLog("view disappeared; pausing playback")
+            pausePlayback()
+        }
+    }
+
+    private var playbackDuration: TimeInterval {
+        min(max(record.durationSeconds / 30, 8), 60)
+    }
+
+    private func togglePlayback() {
+        playbackLog("button action; isPlaying=\(isPlaying) progress=\(playbackProgress)")
+        if isPlaying {
+            pausePlayback()
+        } else {
+            startPlayback()
+        }
+    }
+
+    private func startPlayback() {
+        playbackLog("start requested; existingTask=\(playbackTask != nil)")
+        playbackTask?.cancel()
+        if playbackProgress >= 0.999 {
+            playbackProgress = 0
+        }
+
+        let initialProgress = playbackProgress
+        let startedAt = Date()
+        isPlaying = true
+        playbackLog("isPlaying=true; creating task at progress=\(initialProgress)")
+        playbackTask = Task { @MainActor in
+            playbackLog("task started")
+            while !Task.isCancelled {
+                let elapsed = Date().timeIntervalSince(startedAt)
+                let nextProgress = min(
+                    initialProgress + elapsed / playbackDuration,
+                    1
+                )
+                playbackProgress = nextProgress
+
+                if nextProgress >= 1 {
+                    isPlaying = false
+                    playbackTask = nil
+                    playbackLog("task completed")
+                    return
+                }
+
+                try? await Task.sleep(nanoseconds: 33_000_000)
+            }
+            playbackLog("task cancelled")
+        }
+    }
+
+    private func pausePlayback() {
+        playbackLog("pause requested; existingTask=\(playbackTask != nil) progress=\(playbackProgress)")
+        playbackTask?.cancel()
+        playbackTask = nil
+        isPlaying = false
+    }
+
+    private func playbackLog(_ message: String) {
+        print("[NinePlusPlayback] \(message)")
     }
 
     private var playbackCoordinate: CLLocationCoordinate2D? {

@@ -73,6 +73,44 @@ class RideRecordingTests(unittest.TestCase):
         ):
             self.assertIn(check, recorder)
 
+    def test_live_speed_prefers_valid_core_location_speed_and_has_safe_fallbacks(self) -> None:
+        recorder = source("mini-ninebot/App/NinebotRecordingView.swift")
+        speed_candidate = recorder.split("private func speedCandidate", 1)[1].split(
+            "private func smoothedSpeed", 1
+        )[0]
+
+        self.assertLess(speed_candidate.index("location.speed"), speed_candidate.index("candidate = impliedSpeedMPS"))
+        self.assertIn("location.speed >= 0", speed_candidate)
+        self.assertIn("location.speedAccuracy <= 6", speed_candidate)
+        self.assertIn("impliedSpeedMPS = segmentDistance / deltaTime", speed_candidate)
+        self.assertIn("segmentDistance <= movementNoiseRadius ? 0 : impliedSpeedMPS", speed_candidate)
+        self.assertIn("isPlausibleSpeedChange", speed_candidate)
+        self.assertIn("stationarySpeedSampleCount >= 2", recorder)
+
+    def test_live_speed_label_and_track_points_keep_speed_and_g(self) -> None:
+        recording_view = source("mini-ninebot/App/NinebotRecordingView.swift")
+        models = source("Shared/NinebotModels.swift")
+
+        self.assertIn('Text("当前速度")', recording_view)
+        self.assertIn("minimumFractionDigits: 1", recording_view)
+        self.assertIn("let acceleration = motion.userAcceleration", recording_view)
+        self.assertIn("maxAccelerationG = max(maxAccelerationG, currentAccelerationG)", recording_view)
+        self.assertIn("var speedKmh: Double", models)
+        self.assertIn("var accelerationG: Double", models)
+
+    def test_track_playback_uses_a_real_button_and_updates_the_slider_state(self) -> None:
+        recording_view = source("mini-ninebot/App/NinebotRecordingView.swift")
+        playback = recording_view.split("private struct RecordedRideTrackMap", 1)[1].split(
+            "private struct RecordedRideDetailMetrics", 1
+        )[0]
+
+        self.assertIn("@State private var isPlaying = false", playback)
+        self.assertIn("@State private var playbackTask: Task<Void, Never>?", playback)
+        self.assertIn("Button(action: togglePlayback)", playback)
+        self.assertIn("playbackProgress = nextProgress", playback)
+        self.assertIn("value: $playbackProgress", playback)
+        self.assertIn("pausePlayback()", playback)
+
 
 if __name__ == "__main__":
     unittest.main()
