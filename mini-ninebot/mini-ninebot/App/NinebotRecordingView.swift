@@ -7,7 +7,7 @@ import UIKit
 
 struct NinebotRecordingView: View {
     @ObservedObject var model: NinebotViewModel
-    @StateObject private var recorder = NinebotRideRecorder()
+    @ObservedObject var recorder: NinebotRideRecorder
     @State private var pendingRecord: NinebotRecordedRide?
 
     private var snapshot: NinebotVehicleSnapshot? {
@@ -158,14 +158,16 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
     private let maximumReasonableSpeedKmh = 132.0
     private let maximumReasonableGPSAccelerationG = 0.75
     private let maximumReasonableMotionG = 1.35
-    private let maximumReasonableSegmentDistance = 160.0
-    private let maximumLocationAge: TimeInterval = 6
+    private let maximumReasonableSegmentDistance = 500.0
+    private let maximumPreviewLocationAge: TimeInterval = 10
+    private let maximumRecordingLocationAge: TimeInterval = 180
     private let minimumLocationDeltaTime: TimeInterval = 0.45
-    private let maximumLocationDeltaTimeForSpeed: TimeInterval = 6
-    private let maximumLocationGapBeforeCooldown: TimeInterval = 8
+    private let maximumLocationDeltaTimeForSpeed: TimeInterval = 30
+    private let maximumLocationGapBeforeCooldown: TimeInterval = 45
     private let recoveryCooldownDuration: TimeInterval = 2.2
     private let goodHorizontalAccuracy = 35.0
     private let maximumHorizontalAccuracy = 60.0
+    private let stationarySpeedThresholdMPS = 0.8
     private let maximumDisplayedAccelerationMPS2 = 4.5
     private let maximumDisplayedDecelerationMPS2 = 7.0
     private let maximumMotionSampleGap: TimeInterval = 0.75
@@ -185,7 +187,8 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.enterStabilizationCooldown()
+                guard let self, !self.isRecording else { return }
+                self.enterStabilizationCooldown()
             }
         }
     }
@@ -236,6 +239,9 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         if currentLocationPoint == nil {
             gpsQuality = .waiting
         }
+        if !isRecording {
+            configureRecordingSystemState(isActive: false)
+        }
         startMotionUpdates()
         manager.startUpdatingLocation()
         manager.requestLocation()
@@ -245,6 +251,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         guard !isRecording else { return }
         manager.stopUpdatingLocation()
         stopMotionUpdates()
+        configureRecordingSystemState(isActive: false)
     }
 
     func start(vehicleSN: String?) {
@@ -287,6 +294,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         ignoreMotionUntil = Date().addingTimeInterval(motionCooldownDuration)
         startedAt = Date()
         endedAt = nil
+        configureRecordingSystemState(isActive: true)
         startMotionUpdates()
         manager.startUpdatingLocation()
     }
@@ -296,6 +304,9 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         let endedAt = Date()
         isRecording = false
         self.endedAt = endedAt
+        manager.stopUpdatingLocation()
+        stopMotionUpdates()
+        configureRecordingSystemState(isActive: false)
 
         let correctedDistanceMeters = NinebotRecordedRide.recalculatedDistanceMeters(from: points)
         let finalDistanceMeters = correctedDistanceMeters > 0 ? correctedDistanceMeters : distanceMeters
@@ -319,6 +330,12 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
             maxAccelerationG: maxAccelerationG,
             points: points
         )
+    }
+
+    private func configureRecordingSystemState(isActive: Bool) {
+        manager.allowsBackgroundLocationUpdates = isActive
+        manager.showsBackgroundLocationIndicator = isActive
+        UIApplication.shared.isIdleTimerDisabled = isActive
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
@@ -439,7 +456,6 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
 
         let segmentDistance = location.distance(from: previousLocation)
         guard deltaTime >= minimumLocationDeltaTime else {
-            lastLocation = location
             currentLocationPoint = trackPoint(for: location, speedKmh: currentSpeedKmh, accelerationG: currentAccelerationG)
             return
         }
@@ -487,7 +503,7 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
                 previousLocation: previousLocation,
                 deltaTime: deltaTime,
                 segmentDistance: segmentDistance,
-                speedMPS: displaySpeedMPS
+                speedMPS: rawSpeedMPS
             ) {
                 distanceMeters += segmentDistance
                 points.append(point)
@@ -502,17 +518,13 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
     }
 
     private func rejectSpeedSample(from location: CLLocation) {
-        let point = trackPoint(for: location, speedKmh: 0, accelerationG: 0)
-        currentLocationPoint = point
         currentSpeedKmh = 0
         if !motionManager.isDeviceMotionActive {
             currentAccelerationG = 0
         }
-        lastLocation = location
         lastSpeedMPS = nil
         smoothedSpeedMPS = nil
-        lastAcceptedLocationAt = location.timestamp
-        gpsQuality = .stabilizing
+        gpsQuality = .weak
         ignoreLocationUntil = Date().addingTimeInterval(recoveryCooldownDuration)
     }
 
@@ -613,14 +625,48 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
         segmentDistance: Double,
         speedMPS: Double
     ) -> Bool {
-        deltaTime >= minimumLocationDeltaTime
-            && deltaTime <= maximumLocationDeltaTimeForSpeed
-            && segmentDistance >= 0
-            && segmentDistance <= maximumReasonableSegmentDistance
-            && speedMPS >= 0
-            && speedMPS * 3.6 <= maximumReasonableSpeedKmh
-            && location.horizontalAccuracy <= maximumHorizontalAccuracy
-            && previousLocation.horizontalAccuracy <= maximumHorizontalAccuracy
+        guard deltaTime >= minimumLocationDeltaTime,
+              deltaTime <= maximumLocationDeltaTimeForSpeed,
+              segmentDistance >= 0,
+              segmentDistance <= maximumReasonableSegmentDistance,
+              speedMPS >= 0,
+              speedMPS * 3.6 <= maximumReasonableSpeedKmh,
+              location.horizontalAccuracy <= maximumHorizontalAccuracy,
+              previousLocation.horizontalAccuracy <= maximumHorizontalAccuracy else {
+            return false
+        }
+
+        let impliedSpeedMPS = segmentDistance / deltaTime
+        guard impliedSpeedMPS.isFinite,
+              impliedSpeedMPS * 3.6 <= maximumReasonableSpeedKmh else {
+            return false
+        }
+
+        let worstAccuracy = max(location.horizontalAccuracy, previousLocation.horizontalAccuracy)
+        let movementNoiseRadius = min(max(worstAccuracy * 0.25, 2), 8)
+        let stationaryNoiseRadius = min(max(worstAccuracy * 0.5, 3), 12)
+        let hasReliableReportedSpeed = location.speed >= 0
+            && location.speedAccuracy >= 0
+            && location.speedAccuracy <= 6
+
+        if hasReliableReportedSpeed {
+            let speedTolerance = max(
+                5,
+                location.speedAccuracy * 2 + movementNoiseRadius / max(deltaTime, 1)
+            )
+            guard abs(location.speed - impliedSpeedMPS) <= speedTolerance else {
+                return false
+            }
+
+            if location.speed < stationarySpeedThresholdMPS,
+               segmentDistance <= stationaryNoiseRadius {
+                return false
+            }
+        } else if segmentDistance <= movementNoiseRadius {
+            return false
+        }
+
+        return true
     }
 
     private func trackPoint(for location: CLLocation, speedKmh: Double, accelerationG: Double) -> NinebotRideTrackPoint {
@@ -635,10 +681,16 @@ final class NinebotRideRecorder: NSObject, ObservableObject, CLLocationManagerDe
     }
 
     private func isUsable(_ location: CLLocation) -> Bool {
-        let age = abs(location.timestamp.timeIntervalSinceNow)
+        let age = Date().timeIntervalSince(location.timestamp)
+        let maximumAge = isRecording ? maximumRecordingLocationAge : maximumPreviewLocationAge
+        let isAfterRecordingStart = startedAt.map {
+            location.timestamp >= $0.addingTimeInterval(-1)
+        } ?? true
         return location.horizontalAccuracy >= 0
             && location.horizontalAccuracy <= maximumHorizontalAccuracy
-            && age <= maximumLocationAge
+            && age >= -2
+            && age <= maximumAge
+            && (!isRecording || isAfterRecordingStart)
             && (-90...90).contains(location.coordinate.latitude)
             && (-180...180).contains(location.coordinate.longitude)
     }

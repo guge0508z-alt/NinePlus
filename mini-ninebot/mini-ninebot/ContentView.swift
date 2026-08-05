@@ -16,6 +16,7 @@ private enum NinebotRootTab: Hashable {
 
 struct ContentView: View {
     @StateObject private var model = NinebotViewModel()
+    @StateObject private var rideRecorder = NinebotRideRecorder()
     @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab: NinebotRootTab = .dashboard
 
@@ -44,7 +45,7 @@ struct ContentView: View {
             .tag(NinebotRootTab.trips)
 
             NavigationStack {
-                NinebotRecordingView(model: model)
+                NinebotRecordingView(model: model, recorder: rideRecorder)
             }
             .tabItem {
                 Label("记录", systemImage: "gauge.with.dots.needle.67percent")
