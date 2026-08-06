@@ -189,6 +189,10 @@ final class NinebotViewModel: ObservableObject {
     @Published private(set) var activeVehicleAction: NinebotVehicleAction?
     @Published private(set) var activeVehicleActionSN: String?
     @Published private(set) var history: [String: [NinebotVehicleHistoryPoint]] = [:]
+    @Published private(set) var serverHistory: [String: [NinebotServerHistoryPoint]] = [:]
+    @Published private(set) var serverHistoryLoadingSNs: Set<String> = []
+    @Published private(set) var serverHistoryLoadedSNs: Set<String> = []
+    @Published private(set) var serverHistoryErrors: [String: String] = [:]
     @Published private(set) var resolvedAddresses: [String: NinebotResolvedAddress] = [:]
     @Published private(set) var recordedRides: [NinebotRecordedRide] = []
     @Published private(set) var rideDetails: [String: NinebotRideDetail] = [:]
@@ -523,6 +527,10 @@ final class NinebotViewModel: ObservableObject {
         password = ""
         dashboard = .empty
         history = [:]
+        serverHistory = [:]
+        serverHistoryLoadingSNs = []
+        serverHistoryLoadedSNs = []
+        serverHistoryErrors = [:]
         rideDetails = [:]
         loadingRideDetailKeys = []
         activeVehicleAction = nil
@@ -581,6 +589,37 @@ final class NinebotViewModel: ObservableObject {
 
     func history(for sn: String) -> [NinebotVehicleHistoryPoint] {
         history[sn] ?? []
+    }
+
+    func serverHistory(for sn: String) -> [NinebotServerHistoryPoint] {
+        serverHistory[sn] ?? []
+    }
+
+    func isLoadingServerHistory(for sn: String) -> Bool {
+        serverHistoryLoadingSNs.contains(sn)
+    }
+
+    func hasLoadedServerHistory(for sn: String) -> Bool {
+        serverHistoryLoadedSNs.contains(sn)
+    }
+
+    func serverHistoryError(for sn: String) -> String? {
+        serverHistoryErrors[sn]
+    }
+
+    func refreshServerHistory(sn: String) async {
+        guard !serverHistoryLoadingSNs.contains(sn) else { return }
+        serverHistoryLoadingSNs.insert(sn)
+        defer { serverHistoryLoadingSNs.remove(sn) }
+
+        do {
+            let points = try await makeClient().fetchVehicleHistory(sn: sn)
+            serverHistory[sn] = points.sorted { $0.collectedAt < $1.collectedAt }
+            serverHistoryLoadedSNs.insert(sn)
+            serverHistoryErrors.removeValue(forKey: sn)
+        } catch {
+            serverHistoryErrors[sn] = error.localizedDescription
+        }
     }
 
     func recordedRides(for sn: String?) -> [NinebotRecordedRide] {

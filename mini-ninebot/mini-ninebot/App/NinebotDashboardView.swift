@@ -1290,7 +1290,7 @@ private struct NinebotTripsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 TripHeroPanel(snapshot: snapshot)
                 NavigationLink {
-                    TripTrendView(snapshot: snapshot, recordedRides: recordedRides)
+                    TripTrendView(model: model, snapshot: snapshot, recordedRides: recordedRides)
                 } label: {
                     TripTrendEntryCard(snapshot: snapshot)
                 }
@@ -2723,6 +2723,7 @@ private struct TripTrendEntryCard: View {
 }
 
 private struct TripTrendView: View {
+    @ObservedObject var model: NinebotViewModel
     var snapshot: NinebotVehicleSnapshot
     var recordedRides: [NinebotRecordedRide]
 
@@ -2730,14 +2731,66 @@ private struct TripTrendView: View {
         TripTrendAnalysis(snapshot: snapshot, recordedRides: recordedRides)
     }
 
+    private var serverHistoryPoints: [NinebotServerHistoryPoint] {
+        model.serverHistory(for: snapshot.vehicle.sn)
+    }
+
+    private var localHistoryFallback: [NinebotServerHistoryPoint] {
+        model.history(for: snapshot.vehicle.sn)
+            .map { point in
+                NinebotServerHistoryPoint(
+                    sn: point.sn,
+                    collectedAt: point.date,
+                    batteryPercent: point.battery.map(Double.init),
+                    batteryVoltage: nil,
+                    batteryTemperature: nil,
+                    estimatedRangeKm: point.endurance,
+                    location: nil,
+                    source: "local",
+                    isStale: false
+                )
+            }
+            .sorted { $0.collectedAt < $1.collectedAt }
+    }
+
+    private var historyPoints: [NinebotServerHistoryPoint] {
+        serverHistoryPoints.isEmpty ? localHistoryFallback : serverHistoryPoints
+    }
+
+    private var isUsingLocalHistoryFallback: Bool {
+        serverHistoryPoints.isEmpty && !localHistoryFallback.isEmpty
+    }
+
+    private var shouldShowAlgorithmEstimate: Bool {
+        !serverHistoryPoints.isEmpty && snapshot.state.serverPrediction?.range.estimatedRange != nil
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 TripTrendHeroCard(snapshot: snapshot, analysis: analysis)
-                TripTrendRangeModelCard(snapshot: snapshot)
+                VehicleHistoryTrendCard(
+                    samples: historyPoints,
+                    isLoading: model.isLoadingServerHistory(for: snapshot.vehicle.sn),
+                    hasLoaded: model.hasLoadedServerHistory(for: snapshot.vehicle.sn),
+                    errorMessage: model.serverHistoryError(for: snapshot.vehicle.sn),
+                    isUsingLocalFallback: isUsingLocalHistoryFallback,
+                    onRetry: {
+                        Task {
+                            await model.refreshServerHistory(sn: snapshot.vehicle.sn)
+                        }
+                    }
+                )
+                if shouldShowAlgorithmEstimate {
+                    TripTrendRangeModelCard(snapshot: snapshot)
+                } else {
+                    TripTrendOfficialRangeCard(snapshot: snapshot)
+                }
                 TripTrendDailyCard(records: analysis.dailyRecords)
                 TripTrendRideCard(analysis: analysis)
-                TripTrendInsightCard(analysis: analysis)
+                if shouldShowAlgorithmEstimate {
+                    TripTrendInsightCard(analysis: analysis)
+                }
 
                 if !recordedRides.isEmpty {
                     TripTrendRecordedCard(records: recordedRides)
@@ -2749,7 +2802,338 @@ private struct TripTrendView: View {
         .background(Color.teslaPageBackground.ignoresSafeArea())
         .navigationTitle("趋势分析")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: snapshot.vehicle.sn) {
+            await model.refreshServerHistory(sn: snapshot.vehicle.sn)
+        }
     }
+}
+
+private struct TripTrendOfficialRangeCard: View {
+    var snapshot: NinebotVehicleSnapshot
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: "road.lanes")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(Color.teslaGreen)
+                .frame(width: 42, height: 42)
+                .background(Color.teslaGreen.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("官方续航")
+                    .font(.headline)
+                    .foregroundStyle(Color.teslaPrimaryText)
+                Text("当前使用九号官方续航数据")
+                    .font(.caption)
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
+
+            Spacer(minLength: 8)
+
+            Text(snapshot.state.officialEstimatedMileageText)
+                .font(.title3.monospacedDigit().weight(.bold))
+                .foregroundStyle(Color.teslaPrimaryText)
+                .lineLimit(1)
+        }
+        .padding(16)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
+    }
+}
+
+private enum VehicleHistoryMetric: String, CaseIterable, Identifiable {
+    case batteryPercent
+    case batteryVoltage
+    case batteryTemperature
+    case estimatedRange
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .batteryPercent: return "电量趋势"
+        case .batteryVoltage: return "电压趋势"
+        case .batteryTemperature: return "电池温度趋势"
+        case .estimatedRange: return "官方续航趋势"
+        }
+    }
+
+    var unit: String {
+        switch self {
+        case .batteryPercent: return "%"
+        case .batteryVoltage: return "V"
+        case .batteryTemperature: return "°C"
+        case .estimatedRange: return "km"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .batteryPercent: return Color.teslaGreen
+        case .batteryVoltage: return .blue
+        case .batteryTemperature: return .orange
+        case .estimatedRange: return .purple
+        }
+    }
+
+    var maximumFractionDigits: Int {
+        self == .batteryPercent ? 0 : 1
+    }
+
+    func value(from point: NinebotServerHistoryPoint) -> Double? {
+        switch self {
+        case .batteryPercent: return point.batteryPercent
+        case .batteryVoltage: return point.batteryVoltage
+        case .batteryTemperature: return point.batteryTemperature
+        case .estimatedRange: return point.estimatedRangeKm
+        }
+    }
+}
+
+private struct VehicleHistoryTrendCard: View {
+    var samples: [NinebotServerHistoryPoint]
+    var isLoading: Bool
+    var hasLoaded: Bool
+    var errorMessage: String?
+    var isUsingLocalFallback: Bool
+    var onRetry: () -> Void
+
+    private var sortedSamples: [NinebotServerHistoryPoint] {
+        samples.sorted { $0.collectedAt < $1.collectedAt }
+    }
+
+    private var containsStaleSamples: Bool {
+        sortedSamples.contains(where: \.isStale)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("历史趋势")
+                        .font(.headline)
+                        .foregroundStyle(Color.teslaPrimaryText)
+                    Text("服务器定时采集")
+                        .font(.caption)
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+
+                Spacer()
+
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+
+            if sortedSamples.isEmpty {
+                emptyState
+            } else {
+                if isUsingLocalFallback {
+                    Label("服务器暂无历史，当前使用本地历史快照", systemImage: "internaldrive")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.teslaSecondaryText)
+                }
+
+                ForEach(VehicleHistoryMetric.allCases) { metric in
+                    VehicleHistoryMetricChart(metric: metric, samples: sortedSamples)
+                }
+
+                if containsStaleSamples {
+                    Label("部分历史数据来自缓存，可能不是最新", systemImage: "clock.badge.exclamationmark")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(Color.orange)
+                }
+
+                if errorMessage != nil {
+                    historyError(compact: true)
+                }
+            }
+        }
+        .padding(16)
+        .background(Color.teslaCardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.teslaHairline, lineWidth: 1)
+        }
+        .shadow(color: Color.black.opacity(0.05), radius: 14, x: 0, y: 8)
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if isLoading && !hasLoaded {
+            HStack(spacing: 10) {
+                ProgressView()
+                Text("正在读取历史数据")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(Color.teslaSecondaryText)
+            }
+            .frame(maxWidth: .infinity, minHeight: 130)
+        } else if errorMessage != nil {
+            historyError(compact: false)
+        } else {
+            ContentUnavailableView {
+                Label("正在积累历史数据", systemImage: "chart.xyaxis.line")
+            } description: {
+                Text("服务器采集到更多车况后将在这里显示趋势")
+            }
+            .frame(minHeight: 150)
+        }
+    }
+
+    private func historyError(compact: Bool) -> some View {
+        VStack(alignment: compact ? .leading : .center, spacing: 9) {
+            Label("历史数据加载失败", systemImage: "wifi.exclamationmark")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.orange)
+            if !compact, let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .multilineTextAlignment(.center)
+            }
+            Button("重试", action: onRetry)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+        }
+        .frame(maxWidth: .infinity, minHeight: compact ? nil : 130, alignment: compact ? .leading : .center)
+    }
+}
+
+private struct VehicleHistoryMetricChart: View {
+    var metric: VehicleHistoryMetric
+    var samples: [NinebotServerHistoryPoint]
+
+    private var values: [(date: Date, value: Double)] {
+        samples
+            .sorted { $0.collectedAt < $1.collectedAt }
+            .compactMap { point in
+                metric.value(from: point).map { (point.collectedAt, $0) }
+            }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack {
+                Text(metric.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.teslaPrimaryText)
+                Spacer()
+                Text(latestValueText)
+                    .font(.subheadline.monospacedDigit().weight(.bold))
+                    .foregroundStyle(metric.tint)
+            }
+
+            if values.isEmpty {
+                Text("暂无该项历史数据")
+                    .font(.caption)
+                    .foregroundStyle(Color.teslaSecondaryText)
+                    .frame(maxWidth: .infinity, minHeight: 72)
+                    .background(Color.teslaControlBackground.opacity(0.7))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            } else {
+                GeometryReader { proxy in
+                    let points = chartPoints(in: proxy.size)
+                    ZStack {
+                        VStack(spacing: 0) {
+                            ForEach(0..<3, id: \.self) { _ in
+                                Divider().opacity(0.45)
+                                Spacer(minLength: 0)
+                            }
+                            Divider().opacity(0.45)
+                        }
+
+                        Path { path in
+                            guard let first = points.first else { return }
+                            path.move(to: first)
+                            for point in points.dropFirst() {
+                                path.addLine(to: point)
+                            }
+                        }
+                        .stroke(metric.tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+
+                        ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                            Circle()
+                                .fill(metric.tint)
+                                .frame(width: points.count == 1 ? 7 : 4, height: points.count == 1 ? 7 : 4)
+                                .position(point)
+                        }
+                    }
+                }
+                .frame(height: 92)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.teslaControlBackground.opacity(0.7))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                HStack {
+                    Text(Self.timeFormatter.string(from: values.first?.date ?? Date()))
+                    Spacer()
+                    Text(Self.timeFormatter.string(from: values.last?.date ?? Date()))
+                }
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(Color.teslaSecondaryText)
+            }
+        }
+        .padding(12)
+        .background(Color.teslaControlBackground.opacity(0.32))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private var latestValueText: String {
+        guard let value = values.last?.value else { return "--" }
+        return "\(value.formatted(.number.precision(.fractionLength(0...metric.maximumFractionDigits)))) \(metric.unit)"
+    }
+
+    private func chartPoints(in size: CGSize) -> [CGPoint] {
+        guard !values.isEmpty else { return [] }
+        let range = valueRange
+        let span = max(range.upperBound - range.lowerBound, 0.0001)
+        let startTime = values.first?.date.timeIntervalSince1970 ?? 0
+        let endTime = values.last?.date.timeIntervalSince1970 ?? startTime
+        let timeSpan = max(endTime - startTime, 0)
+        let inset: CGFloat = 7
+        let width = max(size.width - inset * 2, 1)
+        let height = max(size.height - inset * 2, 1)
+
+        return values.enumerated().map { index, sample in
+            let xFraction: Double
+            if timeSpan > 0 {
+                xFraction = (sample.date.timeIntervalSince1970 - startTime) / timeSpan
+            } else {
+                xFraction = values.count == 1 ? 0.5 : Double(index) / Double(values.count - 1)
+            }
+            let yFraction = min(max((sample.value - range.lowerBound) / span, 0), 1)
+            return CGPoint(
+                x: inset + width * CGFloat(xFraction),
+                y: inset + height * (1 - CGFloat(yFraction))
+            )
+        }
+    }
+
+    private var valueRange: ClosedRange<Double> {
+        if metric == .batteryPercent { return 0...100 }
+        let rawValues = values.map { $0.value }
+        guard let minimum = rawValues.min(), let maximum = rawValues.max() else { return 0...1 }
+        let rawSpan = maximum - minimum
+        let padding = max(rawSpan * 0.12, max(abs(maximum) * 0.02, 0.5))
+        return (minimum - padding)...(maximum + padding)
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        formatter.dateFormat = "MM/dd HH:mm"
+        return formatter
+    }()
 }
 
 private struct TripTrendRangeModelCard: View {

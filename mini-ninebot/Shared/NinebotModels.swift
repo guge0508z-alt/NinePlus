@@ -1673,6 +1673,47 @@ struct NinebotVehicleState: Codable, Equatable {
     }
 }
 
+struct NinebotServerHistoryLocation: Equatable {
+    var latitude: Double
+    var longitude: Double
+}
+
+struct NinebotServerHistoryPoint: Equatable, Identifiable {
+    var id: String
+    var sn: String
+    var collectedAt: Date
+    var batteryPercent: Double?
+    var batteryVoltage: Double?
+    var batteryTemperature: Double?
+    var estimatedRangeKm: Double?
+    var location: NinebotServerHistoryLocation?
+    var source: String?
+    var isStale: Bool
+
+    init(
+        sn: String,
+        collectedAt: Date,
+        batteryPercent: Double?,
+        batteryVoltage: Double?,
+        batteryTemperature: Double?,
+        estimatedRangeKm: Double?,
+        location: NinebotServerHistoryLocation?,
+        source: String?,
+        isStale: Bool
+    ) {
+        self.id = "\(sn)-\(collectedAt.timeIntervalSince1970)"
+        self.sn = sn
+        self.collectedAt = collectedAt
+        self.batteryPercent = batteryPercent
+        self.batteryVoltage = batteryVoltage
+        self.batteryTemperature = batteryTemperature
+        self.estimatedRangeKm = estimatedRangeKm
+        self.location = location
+        self.source = source
+        self.isStale = isStale
+    }
+}
+
 struct NinebotVehicleHistoryPoint: Codable, Equatable, Identifiable {
     var id: String
     var sn: String

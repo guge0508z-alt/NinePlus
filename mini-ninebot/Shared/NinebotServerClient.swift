@@ -35,6 +35,31 @@ struct NinebotServerClient {
         _ = try await request(method: "GET", path: ["vehicles"])
     }
 
+    func fetchVehicleHistory(
+        sn: String,
+        from: Date? = nil,
+        to: Date? = nil,
+        limit: Int = 288
+    ) async throws -> [NinebotServerHistoryPoint] {
+        let formatter = ISO8601DateFormatter()
+        var queryItems = [
+            URLQueryItem(name: "limit", value: "\(min(max(limit, 1), 1_000))")
+        ]
+        if let from {
+            queryItems.append(URLQueryItem(name: "from", value: formatter.string(from: from)))
+        }
+        if let to {
+            queryItems.append(URLQueryItem(name: "to", value: formatter.string(from: to)))
+        }
+
+        let payload = try await request(
+            method: "GET",
+            path: ["vehicles", sn, "history"],
+            queryItems: queryItems
+        )
+        return Self.vehicleHistory(from: payload, fallbackSN: sn)
+    }
+
     func login(account: String, password: String) async throws -> NinebotLoginResult {
         let payload = try await request(
             method: "POST",
@@ -553,6 +578,44 @@ private extension NinebotServerClient {
             records: records,
             raw: value
         )
+    }
+
+    static func vehicleHistory(from value: JSONValue, fallbackSN: String) -> [NinebotServerHistoryPoint] {
+        let object = value.objectValue ?? [:]
+        let sn = firstString(["sn"], in: object) ?? fallbackSN
+        let values = object["list"]?.arrayValue ?? []
+
+        return values.compactMap { value -> NinebotServerHistoryPoint? in
+            guard let item = value.objectValue,
+                  let collectedAt = dateValue(item["collected_at"] ?? item["collectedAt"]) else {
+                return nil
+            }
+
+            let locationObject = item["location"]?.objectValue
+            let latitude = locationObject.flatMap { firstDouble(["latitude", "lat"], in: $0) }
+            let longitude = locationObject.flatMap { firstDouble(["longitude", "lon"], in: $0) }
+            let location: NinebotServerHistoryLocation?
+            if let latitude, let longitude,
+               (-90...90).contains(latitude),
+               (-180...180).contains(longitude) {
+                location = NinebotServerHistoryLocation(latitude: latitude, longitude: longitude)
+            } else {
+                location = nil
+            }
+
+            return NinebotServerHistoryPoint(
+                sn: sn,
+                collectedAt: collectedAt,
+                batteryPercent: firstDouble(["battery_percent", "batteryPercent"], in: item),
+                batteryVoltage: firstDouble(["battery_voltage", "batteryVoltage"], in: item),
+                batteryTemperature: firstDouble(["battery_temperature", "batteryTemperature"], in: item),
+                estimatedRangeKm: firstDouble(["estimated_range_km", "estimatedRangeKm"], in: item),
+                location: location,
+                source: firstString(["source"], in: item),
+                isStale: item["stale"]?.boolValue ?? false
+            )
+        }
+        .sorted { $0.collectedAt < $1.collectedAt }
     }
 
     static func vehicleState(
